@@ -64,6 +64,37 @@ assert_local_blob_existsy "$FIXTURE" "$STORAGE_PATH" || fail "probe blob not fou
 assert_preview_existsy    "$FIXTURE" "$STORAGE_PATH" || fail "probe thumbnail not found on disk"
 log "Probe blob and thumbnail confirmed present on disk."
 
+# ── 1c. Delete every non-admin user created by earlier Hurl tests ─────────────
+#
+# Tests like permissions.hurl and grants.hurl create user accounts (bob,
+# dave, eve, adam, frank, …) that own their own folders/files. The probe
+# cleanup below only sees admin-owned roots, so those other users' files
+# would leak as orphan blobs on disk. Deleting the users cascades through
+# the schema (storage.folders/storage.files via ON DELETE CASCADE), which
+# fires the file-delete trigger and decrements blob ref_counts. The
+# subsequent trash-empty triggers garbage_collect() to remove the
+# now-orphaned blob files from disk.
+
+# /api/admin/users returns { users: [...], total, limit, offset }
+USERS_JSON=$(curl -sf -H "$AUTH" "$base_url/api/admin/users?limit=500")
+
+ADMIN_USER_ID=$(echo "$USERS_JSON" \
+    | jq -r --arg u "$username" '.users[] | select(.username == $u) | .id')
+[[ -z "$ADMIN_USER_ID" || "$ADMIN_USER_ID" == "null" ]] && fail "could not resolve admin user id"
+
+OTHER_USER_IDS=$(echo "$USERS_JSON" \
+    | jq -r --arg admin_id "$ADMIN_USER_ID" '.users[] | select(.id != $admin_id) | .id')
+
+OTHER_USER_COUNT=0
+while IFS= read -r uid; do
+    [[ -z "$uid" ]] && continue
+    OTHER_USER_COUNT=$((OTHER_USER_COUNT + 1))
+    curl -sf -X DELETE -H "$AUTH" "$base_url/api/admin/users/$uid" >/dev/null \
+        || fail "failed to delete user $uid"
+done <<< "$OTHER_USER_IDS"
+
+log "Deleted $OTHER_USER_COUNT non-admin user(s) created by tests."
+
 # ── 2. Move all live files and folders to trash ───────────────────────────────
 #
 # For each root folder, list its direct children and soft-delete them.

@@ -1388,12 +1388,23 @@ impl DedupService {
         let mut total_bytes = 0u64;
 
         // ── Phase 1: GC orphaned manifests ───────────────────────
+        // A manifest is collectible when:
+        //   • ref_count has been decremented to 0 by cleanup_if_orphaned
+        //     on the single-file-delete service path, OR
+        //   • no `storage.files.blob_hash` references its file_hash
+        //     (covers bulk-delete paths: user cascade, empty_trash —
+        //     where the PG trigger only touches storage.blobs and the
+        //     per-file cleanup_if_orphaned call is skipped).
         loop {
             let batch: Vec<(String, Vec<String>, i64)> = sqlx::query_as(
                 "DELETE FROM storage.chunk_manifests
                   WHERE ctid = ANY(
-                      SELECT ctid FROM storage.chunk_manifests
-                       WHERE ref_count <= 0
+                      SELECT ctid FROM storage.chunk_manifests m
+                       WHERE m.ref_count <= 0
+                          OR NOT EXISTS (
+                              SELECT 1 FROM storage.files f
+                               WHERE f.blob_hash = m.file_hash
+                          )
                        LIMIT $1
                   )
                   RETURNING file_hash, chunk_hashes, total_size",
@@ -1408,9 +1419,14 @@ impl DedupService {
             }
 
             for (file_hash, chunk_hashes, size) in &batch {
-                // Decrement chunk ref_counts
+                // Decrement chunk ref_counts. GREATEST(.., 0) guards against the
+                // single-chunk file case where the PG file-delete trigger already
+                // decremented blobs.ref_count (because file_hash == chunk_hash);
+                // without the clamp this would underflow the CHECK constraint.
                 sqlx::query(
-                    "UPDATE storage.blobs SET ref_count = ref_count - 1 WHERE hash = ANY($1)",
+                    "UPDATE storage.blobs
+                        SET ref_count = GREATEST(ref_count - 1, 0)
+                      WHERE hash = ANY($1)",
                 )
                 .bind(chunk_hashes)
                 .execute(self.maintenance_pool.as_ref())
