@@ -7,6 +7,7 @@ use crate::application::dtos::display_helpers::{
 };
 use crate::application::dtos::trash_dto::TrashedItemDto;
 use crate::application::ports::authorization_ports::AuthorizationEngine;
+use crate::application::ports::file_lifecycle::FileDeletedHook;
 use crate::application::ports::storage_ports::{FileReadPort, FileWritePort};
 use crate::application::ports::trash_ports::TrashUseCase;
 use crate::common::errors::{DomainError, ErrorKind, Result};
@@ -21,7 +22,6 @@ use crate::infrastructure::repositories::pg::trash_db_repository::TrashDbReposit
 use crate::infrastructure::services::dedup_service::DedupService;
 use crate::infrastructure::services::file_content_cache::FileContentCache;
 use crate::infrastructure::services::pg_acl_engine::PgAclEngine;
-use crate::infrastructure::services::thumbnail_service::ThumbnailService;
 
 /**
  * Application service for trash operations.
@@ -53,8 +53,8 @@ pub struct TrashService {
     /// orphaned blob files and thumbnails that the PG trigger cannot reach.
     dedup_service: Arc<DedupService>,
 
-    /// Thumbnail service for cleaning up thumbnails on permanent delete
-    thumbnail_service: Option<Arc<ThumbnailService>>,
+    /// Hook fired after a file is permanently deleted (typically the FileLifecycleService composite).
+    file_deleted_hook: Option<Arc<dyn FileDeletedHook>>,
 
     /// Content cache — invalidated when files are permanently deleted from trash.
     content_cache: Option<Arc<FileContentCache>>,
@@ -75,7 +75,6 @@ impl TrashService {
         folder_storage_port: Arc<FolderDbRepository>,
         retention_days: u32,
         dedup_service: Arc<DedupService>,
-        thumbnail_service: Option<Arc<ThumbnailService>>,
         content_cache: Option<Arc<FileContentCache>>,
         authz: Arc<PgAclEngine>,
     ) -> Self {
@@ -85,11 +84,17 @@ impl TrashService {
             file_write_port,
             folder_storage_port,
             dedup_service,
-            thumbnail_service,
+            file_deleted_hook: None,
             content_cache,
             authz,
             retention_days,
         }
+    }
+
+    /// Sets the lifecycle hook fired after a file is permanently deleted.
+    pub fn with_file_deleted_hook(mut self, hook: Arc<dyn FileDeletedHook>) -> Self {
+        self.file_deleted_hook = Some(hook);
+        self
     }
 
     /// Converts a TrashedItem entity to a DTO
@@ -128,46 +133,6 @@ impl TrashService {
             category,
             icon_class,
             icon_special_class,
-        }
-    }
-
-    /// Validates that the given user owns the trashed item.
-    /// Returns an error if the item does not exist or belongs to a different user.
-    #[instrument(skip(self))]
-    async fn _validate_user_ownership(&self, item_id: &str, user_id: &str) -> Result<()> {
-        let item_uuid = Uuid::parse_str(item_id)
-            .map_err(|e| DomainError::validation_error(format!("Invalid item ID: {}", e)))?;
-        let user_uuid = Uuid::parse_str(user_id)
-            .map_err(|e| DomainError::validation_error(format!("Invalid user ID: {}", e)))?;
-
-        match self
-            .trash_repository
-            .get_trash_item(&item_uuid, &user_uuid)
-            .await?
-        {
-            Some(item) => {
-                if item.user_id() != user_uuid {
-                    error!(
-                        "User {} attempted to access trash item {} owned by {}",
-                        user_id,
-                        item_id,
-                        item.user_id()
-                    );
-                    return Err(DomainError::access_denied(
-                        "TrashItem",
-                        "You do not have permission to access this trash item",
-                    ));
-                }
-                Ok(())
-            }
-            None => {
-                // Item not found for this user — treat as authorization error
-                // to avoid leaking existence information
-                Err(DomainError::not_found(
-                    "TrashItem",
-                    format!("{} (user: {})", item_id, user_id),
-                ))
-            }
         }
     }
 }
@@ -617,12 +582,8 @@ impl TrashUseCase for TrashService {
                             }
                         }
 
-                        // Best-effort thumbnail cleanup — thumbnails are cache
-                        // artifacts, so failure must not block file deletion.
-                        if let Some(thumb) = &self.thumbnail_service
-                            && let Err(e) = thumb.delete_thumbnails(&file_id).await
-                        {
-                            warn!("Failed to delete thumbnails for file {}: {}", file_id, e);
+                        if let Some(hook) = &self.file_deleted_hook {
+                            hook.on_file_deleted(&file_id).await;
                         }
                     }
                     TrashedItemType::Folder => {
@@ -714,18 +675,20 @@ impl TrashUseCase for TrashService {
     async fn empty_trash(&self, user_id: Uuid) -> Result<()> {
         info!("Emptying trash for user {}", user_id);
 
-        // Collect trashed file IDs BEFORE bulk-deleting so we can clean up
-        // their thumbnails afterward.  This is best-effort — if the query
-        // fails we still proceed with the bulk delete.
-        let trashed_file_ids: Vec<String> = if self.thumbnail_service.is_some() {
-            match self.trash_repository.get_trash_items(&user_id).await {
-                Ok(items) => items
-                    .iter()
-                    .filter(|i| matches!(i.item_type(), TrashedItemType::File))
-                    .map(|i| i.original_id().to_string())
-                    .collect(),
+        // Collect ALL trashed file IDs BEFORE bulk-deleting so hooks (thumbnail
+        // cleanup, etc.) can run afterward.  We use get_all_trashed_file_ids (not
+        // get_trash_items) because the trash_items view excludes files inside a
+        // trashed folder — those files will still be deleted by clear_trash via
+        // the folder CASCADE, but their hooks would otherwise be missed.
+        let trashed_file_ids: Vec<String> = if self.file_deleted_hook.is_some() {
+            match self
+                .trash_repository
+                .get_all_trashed_file_ids(&user_id)
+                .await
+            {
+                Ok(ids) => ids,
                 Err(e) => {
-                    warn!("Could not list trashed items for thumbnail cleanup: {}", e);
+                    warn!("Could not list trashed files for hook cleanup: {}", e);
                     Vec::new()
                 }
             }
@@ -758,12 +721,9 @@ impl TrashUseCase for TrashService {
             }
         }
 
-        // Best-effort thumbnail cleanup for all deleted files
-        if let Some(thumb) = &self.thumbnail_service {
+        if let Some(hook) = &self.file_deleted_hook {
             for file_id in &trashed_file_ids {
-                if let Err(e) = thumb.delete_thumbnails(file_id).await {
-                    warn!("Failed to delete thumbnails for file {}: {}", file_id, e);
-                }
+                hook.on_file_deleted(file_id).await;
             }
         }
 

@@ -44,6 +44,7 @@ use crate::infrastructure::services::trash_cleanup_service::TrashCleanupService;
 use crate::application::services::app_password_service::AppPasswordService;
 use crate::application::services::calendar_service::CalendarService;
 use crate::application::services::device_auth_service::DeviceAuthService;
+use crate::application::services::file_lifecycle_service::FileLifecycleService;
 use crate::application::services::music_service::MusicService;
 use crate::application::services::storage_usage_service::StorageUsageService;
 use crate::application::services::wopi_lock_service::WopiLockService;
@@ -274,10 +275,14 @@ impl AppServiceFactory {
             "Core services initialized: path service, file content cache, thumbnails, chunked upload, image transcode, dedup (PRIMARY blob storage)"
         );
 
+        let file_lifecycle =
+            Arc::new(FileLifecycleService::new().with_deleted_hook(thumbnail_service.clone()));
+
         Ok(CoreServices {
             path_service,
             file_content_cache,
             thumbnail_service,
+            file_lifecycle,
             chunked_upload_service,
             image_transcode_service,
             dedup_service,
@@ -392,7 +397,7 @@ impl AppServiceFactory {
                 Some(core.file_content_cache.clone()),
                 authz.clone(),
             )
-            .with_file_deleted_hook(core.thumbnail_service.clone()),
+            .with_file_deleted_hook(core.file_lifecycle.clone()),
         );
 
         let file_use_case_factory = Arc::new(AppFileUseCaseFactory::new(
@@ -463,17 +468,19 @@ impl AppServiceFactory {
         let trash_repo = repos.trash_repository.as_ref()?;
 
         // Wire ports directly to TrashService — no adapter layer needed
-        let service = Arc::new(TrashService::new(
-            trash_repo.clone(),
-            repos.file_read_repository.clone(),
-            repos.file_write_repository.clone(),
-            repos.folder_repository.clone(),
-            self.config.storage.trash_retention_days,
-            core.dedup_service.clone(),
-            Some(core.thumbnail_service.clone()),
-            Some(core.file_content_cache.clone()),
-            authz.clone(),
-        ));
+        let service = Arc::new(
+            TrashService::new(
+                trash_repo.clone(),
+                repos.file_read_repository.clone(),
+                repos.file_write_repository.clone(),
+                repos.folder_repository.clone(),
+                self.config.storage.trash_retention_days,
+                core.dedup_service.clone(),
+                Some(core.file_content_cache.clone()),
+                authz.clone(),
+            )
+            .with_file_deleted_hook(core.file_lifecycle.clone()),
+        );
 
         // Initialize cleanup service (bulk-deletes expired items in 2 SQL queries)
         let cleanup_service = TrashCleanupService::new(
@@ -1021,6 +1028,8 @@ pub struct CoreServices {
     pub path_service: Arc<PathService>,
     pub file_content_cache: Arc<FileContentCache>,
     pub thumbnail_service: Arc<ThumbnailService>,
+    /// Composite lifecycle dispatcher — register new permanent-delete hooks here only.
+    pub file_lifecycle: Arc<FileLifecycleService>,
     pub chunked_upload_service: Arc<ChunkedUploadService>,
     pub image_transcode_service: Arc<ImageTranscodeService>,
     pub dedup_service: Arc<DedupService>,

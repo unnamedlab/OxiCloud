@@ -402,6 +402,11 @@ impl TrashRepository for MockTrashRepository {
         Ok(())
     }
 
+    async fn get_all_trashed_file_ids(&self, _user_id: &Uuid) -> Result<Vec<String>> {
+        let files = self.trashed_files.lock().unwrap();
+        Ok(files.keys().cloned().collect())
+    }
+
     async fn delete_expired_bulk(&self) -> Result<(u64, u64)> {
         let mut items = self.trash_items.lock().unwrap();
         let now = Utc::now();

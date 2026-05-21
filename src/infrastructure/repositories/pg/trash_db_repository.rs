@@ -157,6 +157,17 @@ impl TrashRepository for TrashDbRepository {
         Ok(())
     }
 
+    async fn get_all_trashed_file_ids(&self, user_id: &Uuid) -> Result<Vec<String>> {
+        let rows = sqlx::query_scalar::<_, String>(
+            "SELECT id::text FROM storage.files WHERE user_id = $1 AND is_trashed = TRUE",
+        )
+        .bind(user_id)
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(|e| DomainError::internal_error("TrashDb", format!("all_trashed_files: {e}")))?;
+        Ok(rows)
+    }
+
     async fn delete_expired_bulk(&self) -> Result<(u64, u64)> {
         let cutoff = Utc::now() - chrono::Duration::days(self.retention_days);
 

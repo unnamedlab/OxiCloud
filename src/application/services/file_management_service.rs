@@ -29,8 +29,8 @@ pub struct FileManagementService {
     trash_service: Option<Arc<TrashService>>,
     content_cache: Option<Arc<FileContentCache>>,
     authz: Arc<PgAclEngine>,
-    /// Hooks fired after a file is permanently deleted.
-    file_deleted_hooks: Vec<Arc<dyn FileDeletedHook>>,
+    /// Hook fired after a file is permanently deleted (typically the FileLifecycleService composite).
+    file_deleted_hook: Option<Arc<dyn FileDeletedHook>>,
 }
 
 impl FileManagementService {
@@ -52,13 +52,13 @@ impl FileManagementService {
             trash_service,
             content_cache,
             authz,
-            file_deleted_hooks: Vec::new(),
+            file_deleted_hook: None,
         }
     }
 
-    /// Registers a hook to fire after a file is permanently deleted.
+    /// Sets the lifecycle hook fired after a file is permanently deleted.
     pub fn with_file_deleted_hook(mut self, hook: Arc<dyn FileDeletedHook>) -> Self {
-        self.file_deleted_hooks.push(hook);
+        self.file_deleted_hook = Some(hook);
         self
     }
 
@@ -185,7 +185,7 @@ impl FileManagementService {
         if let Some(cc) = &self.content_cache {
             cc.invalidate(id).await;
         }
-        for hook in &self.file_deleted_hooks {
+        if let Some(hook) = &self.file_deleted_hook {
             hook.on_file_deleted(id).await;
         }
         info!("File permanently deleted: {}", id);
