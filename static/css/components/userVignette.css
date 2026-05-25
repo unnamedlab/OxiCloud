@@ -4,8 +4,10 @@
  * name resolved asynchronously.  Used in:
  *  • Owner column (list view, SharedWithMe & Favorites sections)
  *  • ShareModal member rows, chips, suggestion items
+ *  • User-menu toolbar button and dropdown header (avatar-only mode)
  *
- * Sizes: --xs (20 px) · --sm (24 px) · --md (32 px) · --lg (40 px)
+ * Sizes: --xs (20 px) · --sm (24 px) · --list (36 px) · --md (32 px)
+ *        --lg (40 px) · --menu (38 px) · --xl (48 px)
  * Colours: .uv-color-0..4  (applied by JS via _colorIndex(userId) % 5)
  *
  * All colours use CSS custom properties — no raw hex / rgb / named values.
@@ -40,6 +42,26 @@
     color: var(--color-text-secondary);
 }
 
+/* ── Email mode (showEmail: true) ─────────────────────────────────────────── */
+
+/* Column wrapper used when both name and email are shown. */
+.user-vignette__info {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+    overflow: hidden;
+    flex: 1;
+}
+
+.user-vignette__email {
+    font-size: 12px;
+    color: var(--color-text-faint);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 /* ── Size variants ─────────────────────────────────────────────────────────── */
 
 .user-vignette--xs .user-vignette__avatar {
@@ -54,6 +76,12 @@
     font-size: 10px;
 }
 
+.user-vignette--list .user-vignette__avatar {
+    width: 36px;
+    height: 36px;
+    font-size: 13px;
+}
+
 .user-vignette--md .user-vignette__avatar {
     width: 32px;
     height: 32px;
@@ -64,6 +92,18 @@
     width: 40px;
     height: 40px;
     font-size: 15px;
+}
+
+.user-vignette--menu .user-vignette__avatar {
+    width: 38px;
+    height: 38px;
+    font-size: 14px;
+}
+
+.user-vignette--xl .user-vignette__avatar {
+    width: 48px;
+    height: 48px;
+    font-size: 17px;
 }
 
 /* ── Colour palette ────────────────────────────────────────────────────────── */
@@ -94,4 +134,16 @@
 .uv-color-4 {
     background: var(--color-badge-amber-bg);
     color: var(--color-badge-amber-text);
+}
+
+/* ── Photo rendering ───────────────────────────────────────────────────────── */
+
+/* When a photo is available the JS replaces the initials text with an <img>.
+   The avatar <span> keeps its background color as a fallback while loading. */
+.user-vignette__avatar img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: 50%;
+    display: block;
 }

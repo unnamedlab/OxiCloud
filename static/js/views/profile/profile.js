@@ -1,6 +1,12 @@
 import { getCsrfHeaders } from '../../core/csrf.js';
+import { installFetchInterceptor } from '../../core/fetchWrapper.js';
 import { i18n } from '../../core/i18n.js';
 import { oxiIconsInit } from '../../core/icons.js';
+import { resizeImageToDataUrl } from '../../utils/imageResize.js';
+
+// Install the fetch interceptor so expired access tokens are refreshed
+// automatically on this standalone page (it is not loaded by main.js here).
+installFetchInterceptor();
 
 const API = '/api';
 
@@ -36,6 +42,240 @@ function timeAgo(dateStr) {
     return d.toLocaleDateString();
 }
 
+// ── Avatar helpers ─────────────────────────────────────────────────────────────
+
+/**
+ * Render the large profile avatar (#p-avatar) — photo or initials.
+ * @param {string | null | undefined} photo
+ * @param {string} initials
+ */
+function _renderAvatar(photo, initials) {
+    const avatarEl = document.getElementById('p-avatar');
+    if (!avatarEl) return;
+    if (photo) {
+        const img = document.createElement('img');
+        img.alt = initials;
+        img.src = photo;
+        img.onerror = () => {
+            avatarEl.replaceChildren();
+            avatarEl.textContent = initials;
+        };
+        avatarEl.replaceChildren(img);
+    } else {
+        avatarEl.replaceChildren();
+        avatarEl.textContent = initials;
+    }
+}
+
+/**
+ * Persist user data to localStorage and refresh the top-right avatar.
+ * Calls GET /api/auth/me to get the fresh user object.
+ * @returns {Promise<void>}
+ */
+async function _refreshUserCache() {
+    try {
+        const resp = await fetch(`${API}/auth/me`, {
+            headers: headers(),
+            credentials: 'same-origin'
+        });
+        if (!resp.ok) return;
+        const user = await resp.json();
+        localStorage.setItem('oxicloud_user', JSON.stringify(user));
+
+        // Refresh top-right avatars if userMenu module is loaded on this page
+        // (profile.html is a standalone page, userMenu is only in index.html)
+        // — so we update #user-avatar / #user-menu-avatar directly if present
+        const initials = (user.username || '?').substring(0, 2).toUpperCase();
+        const topEl = /** @type {HTMLElement|null} */ (document.getElementById('user-avatar'));
+        const dropEl = /** @type {HTMLElement|null} */ (document.getElementById('user-menu-avatar'));
+        if (topEl || dropEl) {
+            /** @param {HTMLElement|null} el */
+            function applyPhoto(el) {
+                if (!el) return;
+                if (user.image) {
+                    const img = document.createElement('img');
+                    img.alt = initials;
+                    img.src = user.image;
+                    img.onerror = () => {
+                        el.replaceChildren();
+                        el.textContent = initials;
+                    };
+                    el.replaceChildren(img);
+                } else {
+                    el.replaceChildren();
+                    el.textContent = initials;
+                }
+            }
+            applyPhoto(topEl);
+            applyPhoto(dropEl);
+        }
+    } catch (_) {
+        // Best-effort
+    }
+}
+
+// ── Photo edit panel ────────────────────────────────────────────────────────────
+
+/** @type {string|null} Pending data URI from file upload (upload mode) */
+let _uploadedDataUri = null;
+
+/**
+ * Switch the visible edit tab.
+ * @param {'url'|'upload'} tab
+ */
+function _switchTab(tab) {
+    const urlPane = document.getElementById('p-pane-url');
+    const uploadPane = document.getElementById('p-pane-upload');
+    const urlBtn = document.getElementById('p-tab-url');
+    const uploadBtn = document.getElementById('p-tab-upload');
+    if (tab === 'url') {
+        urlPane?.classList.remove('hidden');
+        uploadPane?.classList.add('hidden');
+        urlBtn?.classList.add('active');
+        uploadBtn?.classList.remove('active');
+    } else {
+        urlPane?.classList.add('hidden');
+        uploadPane?.classList.remove('hidden');
+        urlBtn?.classList.remove('active');
+        uploadBtn?.classList.add('active');
+    }
+}
+
+function _openEditPanel() {
+    document.getElementById('p-avatar-edit-panel')?.classList.remove('hidden');
+    _switchTab('url');
+    _uploadedDataUri = null;
+    const preview = /** @type {HTMLImageElement|null} */ (document.getElementById('p-image-preview'));
+    if (preview) {
+        preview.src = '';
+        preview.classList.add('hidden');
+    }
+    const urlInput = /** @type {HTMLInputElement|null} */ (document.getElementById('p-image-url'));
+    if (urlInput) urlInput.value = '';
+    const status = document.getElementById('p-avatar-status');
+    if (status) status.innerHTML = '';
+}
+
+function _closeEditPanel() {
+    document.getElementById('p-avatar-edit-panel')?.classList.add('hidden');
+    _uploadedDataUri = null;
+}
+
+/**
+ * Send PUT /api/auth/me/image and update UI on success.
+ * @param {string | null} image
+ */
+async function _saveImage(image) {
+    const statusEl = document.getElementById('p-avatar-status');
+    const saveBtn = /** @type {HTMLButtonElement|null} */ (document.getElementById('p-avatar-save'));
+    if (saveBtn) {
+        saveBtn.disabled = true;
+        saveBtn.innerHTML = `<i class="fas fa-spinner fa-spin"></i>`;
+    }
+    if (statusEl) statusEl.innerHTML = '';
+
+    try {
+        const resp = await fetch(`${API}/auth/me/image`, {
+            method: 'PUT',
+            headers: headers(),
+            credentials: 'same-origin',
+            body: JSON.stringify({ image })
+        });
+
+        if (resp.ok) {
+            await _refreshUserCache();
+            // Update large avatar immediately
+            const raw = localStorage.getItem('oxicloud_user');
+            const user = raw ? JSON.parse(raw) : null;
+            const initials = (user?.username || '?').substring(0, 2).toUpperCase();
+            _renderAvatar(user?.image, initials);
+            _closeEditPanel();
+        } else {
+            const err = await resp.json().catch(() => ({}));
+            if (statusEl) {
+                statusEl.innerHTML =
+                    '<div class="alert alert-error"><i class="fas fa-exclamation-circle"></i> ' +
+                    escapeHtml(err.message || err.error || i18n.t('profile.photo_save_failed')) +
+                    '</div>';
+            }
+        }
+    } catch (err) {
+        if (statusEl) {
+            statusEl.innerHTML =
+                '<div class="alert alert-error"><i class="fas fa-exclamation-circle"></i> ' +
+                escapeHtml(i18n.t('profile.error_network', { message: /** @type {Error} */ (err).message })) +
+                '</div>';
+        }
+    } finally {
+        if (saveBtn) {
+            saveBtn.disabled = false;
+            saveBtn.innerHTML = `<i class="fas fa-save"></i> ${escapeHtml(i18n.t('profile.photo_save'))}`;
+        }
+    }
+}
+
+function _setupPhotoEdit() {
+    const editBtn = document.getElementById('p-avatar-edit-btn');
+    const cancelBtn = document.getElementById('p-avatar-cancel');
+    const saveBtn = document.getElementById('p-avatar-save');
+    const removeBtn = document.getElementById('p-avatar-remove');
+    const tabUrl = document.getElementById('p-tab-url');
+    const tabUpload = document.getElementById('p-tab-upload');
+    const fileInput = /** @type {HTMLInputElement|null} */ (document.getElementById('p-image-file'));
+
+    editBtn?.addEventListener('click', _openEditPanel);
+    cancelBtn?.addEventListener('click', _closeEditPanel);
+
+    tabUrl?.addEventListener('click', () => {
+        _switchTab('url');
+    });
+    tabUpload?.addEventListener('click', () => {
+        _switchTab('upload');
+    });
+
+    saveBtn?.addEventListener('click', async () => {
+        const activePane = document.getElementById('p-pane-url')?.classList.contains('hidden') ? 'upload' : 'url';
+        if (activePane === 'url') {
+            const urlInput = /** @type {HTMLInputElement|null} */ (document.getElementById('p-image-url'));
+            const val = urlInput?.value.trim() || null;
+            await _saveImage(val || null);
+        } else {
+            if (!_uploadedDataUri) {
+                const status = document.getElementById('p-avatar-status');
+                if (status)
+                    status.innerHTML = `<div class="alert alert-error"><i class="fas fa-exclamation-circle"></i> ${escapeHtml(i18n.t('profile.photo_no_file'))}</div>`;
+                return;
+            }
+            await _saveImage(_uploadedDataUri);
+        }
+    });
+
+    removeBtn?.addEventListener('click', async () => {
+        await _saveImage(null);
+    });
+
+    fileInput?.addEventListener('change', async () => {
+        const file = fileInput.files?.[0];
+        if (!file) return;
+        const status = document.getElementById('p-avatar-status');
+        if (status) status.innerHTML = '';
+        try {
+            const dataUri = await resizeImageToDataUrl(file, 104);
+            _uploadedDataUri = dataUri;
+            const preview = /** @type {HTMLImageElement|null} */ (document.getElementById('p-image-preview'));
+            if (preview) {
+                preview.src = dataUri;
+                preview.classList.remove('hidden');
+            }
+        } catch (err) {
+            _uploadedDataUri = null;
+            if (status) {
+                status.innerHTML = `<div class="alert alert-error"><i class="fas fa-exclamation-circle"></i> ${escapeHtml(/** @type {Error} */ (err).message)}</div>`;
+            }
+        }
+    });
+}
+
 async function init() {
     try {
         oxiIconsInit();
@@ -50,7 +290,7 @@ async function init() {
         const user = await resp.json();
 
         const initials = (user.username || '?').substring(0, 2).toUpperCase();
-        document.getElementById('p-avatar').textContent = initials;
+        _renderAvatar(user.image, initials);
         document.getElementById('p-username').textContent = user.username;
         document.getElementById('p-email').textContent = user.email || '';
 
@@ -61,6 +301,17 @@ async function init() {
         } else {
             badge.className = 'role-badge role-badge-user';
             badge.innerHTML = `<i class="fas fa-user"></i> ${i18n.t('profile.role_user')}`;
+        }
+
+        // Photo edit controls
+        const isLocal = !user.auth_provider || user.auth_provider === 'local';
+        const editBtn = document.getElementById('p-avatar-edit-btn');
+        const oidcNote = document.getElementById('p-avatar-oidc-note');
+        if (user.can_edit_image && isLocal) {
+            editBtn?.classList.remove('hidden');
+        } else if (!isLocal && user.image) {
+            // OIDC user with a photo: show note, no edit button
+            oidcNote?.classList.remove('hidden');
         }
 
         document.getElementById('p-detail-username').textContent = user.username;
@@ -360,6 +611,9 @@ document.getElementById('password-form').addEventListener('submit', changePasswo
 document.getElementById('app-pw-generate').addEventListener('click', createAppPassword);
 document.getElementById('app-pw-copy-btn').addEventListener('click', copyAppPassword);
 document.getElementById('app-pw-auto-toggle').addEventListener('click', toggleAutoPasswords);
+
+/* Photo-edit panel — wired once at module load, not per init() call */
+_setupPhotoEdit();
 
 /* Re-render when language changes */
 window.addEventListener('translationsLoaded', () => {

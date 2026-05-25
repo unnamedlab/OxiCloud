@@ -17,6 +17,8 @@ pub struct UserDto {
     pub last_login_at: Option<DateTime<Utc>>,
     pub active: bool,
     pub auth_provider: String,
+    pub image: Option<String>,
+    pub can_edit_image: bool,
 }
 
 impl From<User> for UserDto {
@@ -33,6 +35,8 @@ impl From<User> for UserDto {
             last_login_at: user.last_login_at(),
             active: user.is_active(),
             auth_provider: user.oidc_provider().unwrap_or("local").to_string(),
+            image: user.image().map(|s| s.to_string()),
+            can_edit_image: !user.is_oidc_user(),
         }
     }
 }

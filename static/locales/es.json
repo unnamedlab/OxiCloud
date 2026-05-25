@@ -677,7 +677,20 @@
         "error_label_required": "Introduce una etiqueta",
         "error_create_pw": "Error al crear contraseña de aplicación",
         "confirm_revoke": "¿Revocar contraseña \"{{label}}\"? Los clientes que la usen dejarán de funcionar.",
-        "error_revoke": "Error al revocar contraseña"
+        "error_revoke": "Error al revocar contraseña",
+        "edit_photo": "Edit photo",
+        "photo_tab_url": "URL",
+        "photo_tab_upload": "Upload",
+        "photo_url_placeholder": "https://example.com/photo.jpg",
+        "photo_url_hint": "https://, http://, or data:image/…;base64,… accepted",
+        "photo_choose_file": "Choose a photo (PNG, JPEG, WebP)",
+        "photo_resize_note": "Images larger than 512 × 512 px are automatically resized.",
+        "photo_save": "Save photo",
+        "photo_remove": "Remove photo",
+        "photo_cancel": "Cancel",
+        "photo_save_failed": "Failed to save photo",
+        "photo_no_file": "Please select a file first",
+        "photo_managed_by_oidc": "Photo managed by your identity provider."
     },
     "upload": {
         "uploading": "Subiendo...",

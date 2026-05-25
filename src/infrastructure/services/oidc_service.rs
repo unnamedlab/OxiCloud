@@ -67,6 +67,7 @@ struct IdTokenClaims {
     name: Option<String>,
     groups: Option<Vec<String>>,
     nonce: Option<String>,
+    picture: Option<String>,
     // Standard JWT fields
     #[allow(dead_code)]
     iss: Option<String>,
@@ -90,6 +91,7 @@ struct UserInfoResponse {
     preferred_username: Option<String>,
     name: Option<String>,
     groups: Option<Vec<String>>,
+    picture: Option<String>,
 }
 
 // ============================================================================
@@ -460,6 +462,7 @@ impl OidcServicePort for OidcService {
             preferred_username: claims.preferred_username,
             name: claims.name,
             groups: claims.groups.unwrap_or_default(),
+            picture: claims.picture,
         })
     }
 
@@ -511,6 +514,7 @@ impl OidcServicePort for OidcService {
             preferred_username: info.preferred_username,
             name: info.name,
             groups: info.groups.unwrap_or_default(),
+            picture: info.picture,
         })
     }
 

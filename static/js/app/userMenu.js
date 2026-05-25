@@ -2,6 +2,7 @@
  * User menu, profile modal and logout logic
  */
 
+import { createUserVignette } from '../components/userVignette.js';
 import { getCsrfHeaders } from '../core/csrf.js';
 import { formatFileSize, formatQuotaSize } from '../core/formatters.js';
 import { i18n } from '../core/i18n.js';
@@ -20,6 +21,9 @@ function setupUserMenu() {
     const roleBadge = document.getElementById('user-menu-role-badge');
 
     if (!wrapper || !avatarBtn || !menu) return;
+
+    // Populate avatar and name immediately from localStorage on every page load.
+    updateUserMenuData();
 
     avatarBtn.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -156,20 +160,41 @@ function setupUserMenu() {
     fetchAppVersion();
 }
 
+/**
+ * Mount avatar-only vignettes for the toolbar button and the dropdown header.
+ * Called whenever user data in localStorage changes (login, photo save, etc.).
+ *
+ * The toolbar button (#user-avatar-btn) and the menu header (.user-menu-header)
+ * are the stable mount points.  Both receive a fresh vignette each call so
+ * the photo / initials are always in sync with the current localStorage state.
+ *
+ * @param {string} userId
+ */
+function _mountAvatarVignettes(userId) {
+    const avatarBtn = document.getElementById('user-avatar-btn');
+    if (avatarBtn) {
+        avatarBtn.replaceChildren(createUserVignette(userId, 'menu', { showName: false }));
+    }
+
+    const menuHeader = document.querySelector('.user-menu-header');
+    if (menuHeader) {
+        menuHeader.replaceChildren(createUserVignette(userId, 'xl', { showName: true, showEmail: true }));
+    }
+}
+
+/**
+ * @returns {void}
+ */
 function updateUserMenuData() {
     const USER_DATA_KEY = 'oxicloud_user';
+    /** @type {import('../core/types.js').User} */
     const userData = JSON.parse(localStorage.getItem(USER_DATA_KEY) || '{}');
 
-    const nameEl = document.getElementById('user-menu-name');
-    const emailEl = document.getElementById('user-menu-email');
-    const avatarEl = document.getElementById('user-menu-avatar');
     const storageFill = document.getElementById('user-menu-storage-fill');
     const storageText = document.getElementById('user-menu-storage-text');
 
-    if (userData.username) {
-        if (nameEl) nameEl.textContent = userData.username;
-        if (emailEl) emailEl.textContent = userData.email || '';
-        if (avatarEl) avatarEl.textContent = userData.username.substring(0, 2).toUpperCase();
+    if (userData.username && userData.id) {
+        _mountAvatarVignettes(userData.id);
     }
 
     const usedBytes = userData.storage_used_bytes || 0;
@@ -287,4 +312,4 @@ async function logout() {
     window.location.href = '/login';
 }
 
-export { logout, setupUserMenu, showUserProfileModal };
+export { logout, setupUserMenu, showUserProfileModal, updateUserMenuData };

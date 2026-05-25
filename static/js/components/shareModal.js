@@ -21,7 +21,7 @@ import { addressBook, SYSTEM_BOOK_ID } from '../model/addressBook.js';
 import { grants } from '../model/grants.js';
 import { systemUsers } from '../model/systemUsers.js';
 import { Modal } from './modal.js';
-import { _colorIndex, _initials } from './userVignette.js';
+import { createUserVignette } from './userVignette.js';
 
 /** @import {FileItem, FolderItem, Grant, ContactItem, MemberEntry, LinkEntry, DraftLink, ShareRoleEnum} from '../core/types.js' */
 
@@ -337,27 +337,7 @@ const shareModal = {
             item.className = 'smd-suggestion-item';
             item.tabIndex = 0;
 
-            const avatar = document.createElement('div');
-            avatar.className = `smd-suggestion-avatar uv-color-${_colorIndex(c.id)}`;
-            const displayName = [c.first_name, c.last_name].filter(Boolean).join(' ') || c.full_name || c.id.slice(0, 8);
-            avatar.textContent = _initials(displayName);
-
-            const nameEl = document.createElement('span');
-            nameEl.className = 'smd-suggestion-name';
-            nameEl.textContent = displayName;
-
-            const primaryEmail = c.email?.find((e) => e.is_primary)?.email ?? c.email?.[0]?.email ?? '';
-            if (primaryEmail) {
-                const emailEl = document.createElement('span');
-                emailEl.className = 'smd-suggestion-email';
-                emailEl.textContent = primaryEmail;
-                item.appendChild(avatar);
-                item.appendChild(nameEl);
-                item.appendChild(emailEl);
-            } else {
-                item.appendChild(avatar);
-                item.appendChild(nameEl);
-            }
+            item.appendChild(createUserVignette(c.id, 'sm', { showEmail: true }));
 
             const select = () => onSelect(c);
             item.addEventListener('click', select);
@@ -415,13 +395,7 @@ const shareModal = {
             const chip = document.createElement('div');
             chip.className = 'smd-chip';
 
-            const avatar = document.createElement('div');
-            avatar.className = `smd-chip-avatar uv-color-${_colorIndex(c.id)}`;
-            const displayName = [c.first_name, c.last_name].filter(Boolean).join(' ') || c.full_name || c.id.slice(0, 8);
-            avatar.textContent = _initials(displayName);
-
-            const nameEl = document.createElement('span');
-            nameEl.textContent = displayName;
+            const vignette = createUserVignette(c.id, 'xs');
 
             const rm = document.createElement('button');
             rm.className = 'smd-chip-remove';
@@ -434,8 +408,7 @@ const shareModal = {
                 if (addBtn) addBtn.disabled = this._stagedUsers.length === 0;
             });
 
-            chip.appendChild(avatar);
-            chip.appendChild(nameEl);
+            chip.appendChild(vignette);
             chip.appendChild(rm);
             container.appendChild(chip);
         });
@@ -526,18 +499,7 @@ const shareModal = {
         const row = document.createElement('div');
         row.className = 'smd-member-row';
 
-        const avatar = document.createElement('div');
-        avatar.className = `smd-member-avatar uv-color-${_colorIndex(entry.grant.subject.id)}`;
-
-        // Resolve display name async
-        systemUsers.getDisplayName(entry.grant.subject.id).then((name) => {
-            avatar.textContent = _initials(name);
-            nameEl.textContent = name;
-        });
-
-        const nameEl = document.createElement('span');
-        nameEl.className = 'smd-member-name';
-        nameEl.textContent = `${entry.grant.subject.id.slice(0, 8)}…`;
+        const vignette = createUserVignette(entry.grant.subject.id, 'md');
 
         const roleSelect = document.createElement('select');
         roleSelect.className = 'smd-member-role-select';
@@ -568,8 +530,7 @@ const shareModal = {
             this._refreshMemberGroups();
         });
 
-        row.appendChild(avatar);
-        row.appendChild(nameEl);
+        row.appendChild(vignette);
         row.appendChild(roleSelect);
         row.appendChild(removeBtn);
         return row;

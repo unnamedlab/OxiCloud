@@ -481,7 +481,7 @@ const ui = {
             const id = cell.dataset.ownerId;
             cell.dataset.ownerResolved = '1';
             if (!id) continue;
-            cell.replaceChildren(createUserVignette(id, 'sm'));
+            cell.replaceChildren(createUserVignette(id, 'list'));
         }
     },
 

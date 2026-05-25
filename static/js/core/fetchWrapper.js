@@ -88,11 +88,25 @@ function installFetchInterceptor() {
             return response;
         }
 
-        // Auth endpoints must bypass retry: a 401 on /api/auth/* means the
-        // credentials themselves are invalid; retrying would cause a loop.
+        // True auth primitives must bypass retry — they would either loop
+        // (/refresh), or a 401 there genuinely means bad credentials (login,
+        // register, oidc, device flows).  User-data endpoints that happen to
+        // live under /api/auth/ (me, me/image, change-password, app-passwords)
+        // ARE retried so that an expired access token is transparently refreshed.
         // Public share endpoints (/api/s/) use 401 to mean "password required",
         // not "session expired" — intercepting them would wrongly redirect to login.
-        if (urlStr.includes('/api/auth/') || urlStr.includes('/api/s/')) return response;
+        const AUTH_PRIMITIVES = [
+            '/api/auth/login',
+            '/api/auth/logout',
+            '/api/auth/refresh',
+            '/api/auth/register',
+            '/api/auth/setup',
+            '/api/auth/oidc/',
+            '/api/auth/device/'
+        ];
+        if (AUTH_PRIMITIVES.some((p) => urlStr.includes(p)) || urlStr.includes('/api/s/')) {
+            return response;
+        }
 
         const refreshed = await _refresh();
         if (!refreshed) {

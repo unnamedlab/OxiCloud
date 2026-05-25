@@ -7,6 +7,7 @@ import { loadFiles } from './filesView.js';
 import { updateStorageUsageDisplay } from './main.js';
 import { app } from './state.js';
 import { ui } from './ui.js';
+import { updateUserMenuData } from './userMenu.js';
 
 /**
  * @import {User} from '../core/types.js'
@@ -96,14 +97,7 @@ async function checkAuthentication() {
         const userData = JSON.parse(localStorage.getItem(USER_DATA_KEY) || '{}');
         if (userData.username) {
             // We have cached user data — render immediately, refresh in background
-            const userInitials = userData.username.substring(0, 2).toUpperCase();
-            document.querySelectorAll('.user-avatar, .user-menu-avatar').forEach((el) => {
-                el.textContent = userInitials;
-            });
-            const menuName = document.getElementById('user-menu-name');
-            const menuEmail = document.getElementById('user-menu-email');
-            if (menuName) menuName.textContent = userData.username;
-            if (menuEmail) menuEmail.textContent = userData.email || '';
+            updateUserMenuData();
 
             updateStorageUsageDisplay(userData);
 
@@ -145,10 +139,7 @@ async function checkAuthentication() {
             try {
                 const freshData = await refreshUserData();
                 if (freshData?.username) {
-                    const userInitials = freshData.username.substring(0, 2).toUpperCase();
-                    document.querySelectorAll('.user-avatar, .user-menu-avatar').forEach((el) => {
-                        el.textContent = userInitials;
-                    });
+                    updateUserMenuData();
                     updateStorageUsageDisplay(freshData);
                     resolveHomeFolder().then(() => loadFiles());
                 } else {

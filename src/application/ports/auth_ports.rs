@@ -151,6 +151,7 @@ pub struct OidcIdClaims {
     pub preferred_username: Option<String>,
     pub name: Option<String>,
     pub groups: Vec<String>,
+    pub picture: Option<String>,
 }
 
 /// Port for OIDC operations — implemented in infrastructure layer

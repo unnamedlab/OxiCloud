@@ -20,7 +20,7 @@
     transform: scale(1.05);
 }
 
-.user-avatar-btn:hover .user-avatar {
+.user-avatar-btn:hover .user-vignette__avatar {
     box-shadow: 0 0 0 2px var(--color-accent-ring-strong);
 }
 
@@ -28,19 +28,20 @@
     border-color: var(--color-accent);
 }
 
-.user-avatar {
-    width: 38px;
-    height: 38px;
-    background: var(--color-accent-gradient);
-    border-radius: 50%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: var(--color-danger-text);
-    font-weight: 700;
-    font-size: 14px;
+/* ── Avatar vignette overrides ────────────────────────────────────────────── */
+
+/* The toolbar button and dropdown header mount avatar-only userVignette
+   components.  Sizing is owned by userVignette.css (--menu / --xl variants);
+   the rules below add the decoration that is specific to this context. */
+
+.user-avatar-btn .user-vignette__avatar {
     letter-spacing: 0.5px;
     user-select: none;
+}
+
+.user-menu-header .user-vignette__avatar {
+    letter-spacing: 0.5px;
+    box-shadow: 0 4px 12px var(--color-accent-shadow);
 }
 
 .user-menu {
@@ -89,42 +90,22 @@
     border-bottom: 1px solid var(--color-user-menu-header-border);
 }
 
-.user-menu-avatar {
-    width: 48px;
-    height: 48px;
-    min-width: 48px;
-    background: var(--color-accent-gradient);
-    border-radius: 50%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: var(--color-danger-text);
-    font-weight: 700;
-    font-size: 17px;
-    letter-spacing: 0.5px;
-    box-shadow: 0 4px 12px var(--color-accent-shadow);
+/* The header vignette (xl, name + email) fills the available width. */
+.user-menu-header .user-vignette {
+    flex: 1;
+    min-width: 0;
 }
 
-.user-menu-info {
-    overflow: hidden;
-}
-
-.user-menu-name {
-    font-weight: 600;
+/* Increase name prominence relative to the base vignette style. */
+.user-menu-header .user-vignette__name {
     font-size: 15px;
+    font-weight: 600;
     color: var(--color-text-heading);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
 }
 
-.user-menu-email {
+.user-menu-header .user-vignette__email {
     font-size: 12.5px;
-    color: var(--color-text-faint);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    margin-top: 2px;
+    margin-top: 1px;
 }
 
 .user-menu-storage {

@@ -17,6 +17,8 @@ use crate::common::di::AppState;
 use crate::interfaces::api::cookie_auth;
 use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::auth::CurrentUserId;
+use serde::Deserialize;
+use utoipa::ToSchema;
 
 /// Public auth routes — no authentication required.
 pub fn auth_public_routes() -> Router<Arc<AppState>> {
@@ -34,6 +36,7 @@ pub fn auth_public_routes() -> Router<Arc<AppState>> {
 pub fn auth_protected_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/me", get(get_current_user))
+        .route("/me/image", put(update_user_image))
         .route("/change-password", put(change_password))
         .route("/logout", post(logout))
 }
@@ -320,6 +323,13 @@ async fn get_current_user(
     Ok((StatusCode::OK, Json(user)))
 }
 
+/// DTO for updating the user's profile image.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct UpdateUserImageDto {
+    /// New image URL (https/http) or data URI (data:image/…;base64,…). Null to clear.
+    pub image: Option<String>,
+}
+
 async fn change_password(
     State(state): State<Arc<AppState>>,
     CurrentUserId(user_id): CurrentUserId,
@@ -336,6 +346,29 @@ async fn change_password(
         .await?;
 
     Ok(StatusCode::OK)
+}
+
+pub async fn update_user_image(
+    State(state): State<Arc<AppState>>,
+    CurrentUserId(user_id): CurrentUserId,
+    Json(dto): Json<UpdateUserImageDto>,
+) -> impl IntoResponse {
+    let auth_service = match state.auth_service.as_ref() {
+        Some(svc) => svc,
+        None => {
+            return AppError::internal_error("Authentication service not configured")
+                .into_response();
+        }
+    };
+
+    match auth_service
+        .auth_application_service
+        .update_user_image(user_id, dto.image)
+        .await
+    {
+        Ok(_) => StatusCode::OK.into_response(),
+        Err(e) => AppError::from(e).into_response(),
+    }
 }
 
 async fn logout(

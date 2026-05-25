@@ -1,16 +1,22 @@
 // @ts-check
 
 /**
- * UserVignette — reusable user avatar + name inline component.
+ * UserVignette — reusable user avatar component, two display modes.
  *
- * Renders a coloured circle with initials (or photo when available) alongside
- * an asynchronously-resolved display name.  Used in:
- *  • Owner column (list view) via `ui.resolveOwnerCells()`
- *  • ShareModal member rows / chips / suggestion items
+ * Mode 1 — avatar + name (default):
+ *   A coloured circle with initials (or photo) alongside an async-resolved
+ *   display name.  Used in the owner column, ShareModal rows / chips / items.
+ *
+ * Mode 2 — avatar only ({ showName: false }):
+ *   The circle alone, no name span.  Used in the user-menu toolbar button
+ *   and the dropdown header where the name is rendered separately.
  *
  * Usage:
  *   import { createUserVignette } from './userVignette.js';
+ *   // with name
  *   cell.replaceChildren(createUserVignette(userId, 'sm'));
+ *   // avatar only
+ *   btn.replaceChildren(createUserVignette(userId, 'menu', { showName: false }));
  */
 
 import { systemUsers } from '../model/systemUsers.js';
@@ -42,22 +48,60 @@ export function _colorIndex(userId) {
     return Math.abs(hash) % 5;
 }
 
+/**
+ * Render a photo inside an avatar element, falling back to initials on error.
+ * @param {HTMLElement} avatar     The `.user-vignette__avatar` element.
+ * @param {string}      photoUrl   Non-empty photo URL or data URI.
+ * @param {string}      name       Display name for the alt attribute / fallback.
+ */
+function _applyPhoto(avatar, photoUrl, name) {
+    const img = document.createElement('img');
+    img.alt = name;
+    img.src = photoUrl;
+    img.onerror = () => {
+        // Photo failed to load — fall back to initials
+        avatar.replaceChildren();
+        avatar.textContent = _initials(name);
+    };
+    avatar.replaceChildren(img);
+}
+
 // ── Component ──────────────────────────────────────────────────────────────────
 
 /**
- * @typedef {'xs'|'sm'|'md'|'lg'} VignetteSize
+ * Available sizes.  Each maps to a `.user-vignette--{size}` CSS modifier:
+ *   xs   → 20 px   (chip avatar, small inline contexts)
+ *   sm   → 24 px   (default; ShareModal suggestions, compact rows)
+ *   list → 36 px   (owner column in list view)
+ *   md   → 32 px   (ShareModal member rows)
+ *   lg   → 40 px   (profile page, larger lists)
+ *   menu → 38 px   (user-menu toolbar button)
+ *   xl   → 48 px   (user-menu dropdown header)
+ *
+ * @typedef {'xs'|'sm'|'list'|'md'|'lg'|'menu'|'xl'} VignetteSize
  */
 
 /**
- * Create a user vignette element: a coloured initials circle + async-resolved
- * display name span.  The element is returned immediately with a short-UUID
- * placeholder; the name resolves in the background via `systemUsers`.
+ * @typedef {Object} VignetteOptions
+ * @property {boolean} [showName=true]
+ *   When false, only the avatar circle is rendered — no name span.
+ *   Use this when the name is displayed separately (e.g. the user-menu header).
+ * @property {boolean} [showEmail=false]
+ *   When true (and showName is true), the primary email address is shown below
+ *   the name in a lighter style.  Name and email are wrapped in a
+ *   `.user-vignette__info` column.  Has no effect when showName is false.
+ */
+
+/**
+ * Create a user vignette element.  Returns immediately with a placeholder;
+ * the display name, email, and photo resolve asynchronously via `systemUsers`.
  *
- * @param {string}       userId  UUID of the user
- * @param {VignetteSize} [size='sm']
+ * @param {string}          userId   UUID of the user
+ * @param {VignetteSize}    [size='sm']
+ * @param {VignetteOptions} [options]
  * @returns {HTMLElement}
  */
-export function createUserVignette(userId, size = 'sm') {
+export function createUserVignette(userId, size = 'sm', { showName = true, showEmail = false } = {}) {
     const colorIdx = _colorIndex(userId);
 
     const wrapper = /** @type {HTMLElement} */ (document.createElement('span'));
@@ -67,19 +111,43 @@ export function createUserVignette(userId, size = 'sm') {
     avatar.className = `user-vignette__avatar uv-color-${colorIdx}`;
     // Temporary placeholder: first two chars of UUID
     avatar.textContent = userId.slice(0, 2).toUpperCase();
-
-    const nameEl = document.createElement('span');
-    nameEl.className = 'user-vignette__name';
-    nameEl.textContent = `${userId.slice(0, 8)}…`;
-
     wrapper.appendChild(avatar);
-    wrapper.appendChild(nameEl);
 
-    // Resolve full name asynchronously and update both avatar initials and name
-    systemUsers.getDisplayName(userId).then((name) => {
-        avatar.textContent = _initials(name);
-        nameEl.textContent = name;
-    });
+    /** @type {HTMLElement | null} */
+    const nameEl = showName ? document.createElement('span') : null;
+
+    /** @type {HTMLElement | null} */
+    const emailEl = showName && showEmail ? document.createElement('span') : null;
+
+    if (nameEl) {
+        nameEl.className = 'user-vignette__name';
+        nameEl.textContent = `${userId.slice(0, 8)}…`;
+
+        if (emailEl) {
+            // Wrap name + email in a column so they stack vertically.
+            emailEl.className = 'user-vignette__email';
+            const info = document.createElement('span');
+            info.className = 'user-vignette__info';
+            info.appendChild(nameEl);
+            info.appendChild(emailEl);
+            wrapper.appendChild(info);
+        } else {
+            wrapper.appendChild(nameEl);
+        }
+    }
+
+    // Resolve name, photo, and (when requested) email asynchronously.
+    Promise.all([systemUsers.getDisplayName(userId), systemUsers.getPhoto(userId), emailEl ? systemUsers.getEmail(userId) : Promise.resolve(null)]).then(
+        ([name, photo, email]) => {
+            if (nameEl) nameEl.textContent = name;
+            if (emailEl) emailEl.textContent = email ?? '';
+            if (photo) {
+                _applyPhoto(avatar, photo, name);
+            } else {
+                avatar.textContent = _initials(name);
+            }
+        }
+    );
 
     return wrapper;
 }

@@ -677,7 +677,20 @@
         "error_label_required": "ラベルを入力してください",
         "error_create_pw": "アプリパスワードの作成に失敗しました",
         "confirm_revoke": "アプリパスワード「{{label}}」を失効させますか？使用中のクライアントは動作しなくなります。",
-        "error_revoke": "失効に失敗しました"
+        "error_revoke": "失効に失敗しました",
+        "edit_photo": "Edit photo",
+        "photo_tab_url": "URL",
+        "photo_tab_upload": "Upload",
+        "photo_url_placeholder": "https://example.com/photo.jpg",
+        "photo_url_hint": "https://, http://, or data:image/…;base64,… accepted",
+        "photo_choose_file": "Choose a photo (PNG, JPEG, WebP)",
+        "photo_resize_note": "Images larger than 512 × 512 px are automatically resized.",
+        "photo_save": "Save photo",
+        "photo_remove": "Remove photo",
+        "photo_cancel": "Cancel",
+        "photo_save_failed": "Failed to save photo",
+        "photo_no_file": "Please select a file first",
+        "photo_managed_by_oidc": "Photo managed by your identity provider."
     },
     "upload": {
         "uploading": "アップロード中...",

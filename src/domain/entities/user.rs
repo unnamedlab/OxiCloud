@@ -35,6 +35,7 @@ pub struct User {
     active: bool,
     oidc_provider: Option<String>,
     oidc_subject: Option<String>,
+    image: Option<String>,
 }
 
 impl User {
@@ -83,6 +84,7 @@ impl User {
             active: true,
             oidc_provider: None,
             oidc_subject: None,
+            image: None,
         })
     }
 
@@ -112,6 +114,7 @@ impl User {
             active: true,
             oidc_provider: Some(oidc_provider),
             oidc_subject: Some(oidc_subject),
+            image: None,
         })
     }
 
@@ -143,6 +146,7 @@ impl User {
             active,
             oidc_provider: None,
             oidc_subject: None,
+            image: None,
         }
     }
 
@@ -161,6 +165,7 @@ impl User {
         active: bool,
         oidc_provider: Option<String>,
         oidc_subject: Option<String>,
+        image: Option<String>,
     ) -> Self {
         Self {
             id,
@@ -176,6 +181,7 @@ impl User {
             active,
             oidc_provider,
             oidc_subject,
+            image,
         }
     }
 
@@ -230,6 +236,15 @@ impl User {
 
     pub fn oidc_subject(&self) -> Option<&str> {
         self.oidc_subject.as_deref()
+    }
+
+    pub fn image(&self) -> Option<&str> {
+        self.image.as_deref()
+    }
+
+    pub fn set_image(&mut self, image: Option<String>) {
+        self.image = image;
+        self.updated_at = Utc::now();
     }
 
     /// Returns true if this is an OIDC-only user (no password)

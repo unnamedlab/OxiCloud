@@ -647,6 +647,53 @@ impl AuthApplicationService {
         Ok(())
     }
 
+    /// Update the profile image for a non-OIDC user.
+    pub async fn update_user_image(
+        &self,
+        caller_id: Uuid,
+        image: Option<String>,
+    ) -> Result<(), DomainError> {
+        let user = self.user_storage.get_user_by_id(caller_id).await?;
+
+        if user.is_oidc_user() {
+            return Err(DomainError::new(
+                ErrorKind::AccessDenied,
+                "User",
+                "Avatar is managed by your identity provider and cannot be changed here",
+            ));
+        }
+
+        if let Some(ref img) = image {
+            const MAX_BYTES: usize = 524_288; // 512 KiB
+            if img.len() > MAX_BYTES {
+                return Err(DomainError::new(
+                    ErrorKind::InvalidInput,
+                    "User",
+                    "Image exceeds maximum allowed size (512 KiB)",
+                ));
+            }
+            let valid = img.starts_with("https://")
+                || img.starts_with("http://")
+                || img.starts_with("data:image/png;base64,")
+                || img.starts_with("data:image/webp;base64,")
+                || img.starts_with("data:image/jpeg;base64,");
+            if !valid {
+                return Err(DomainError::new(
+                    ErrorKind::InvalidInput,
+                    "User",
+                    "Image must be an https/http URL or a data URI (png, webp, jpeg)",
+                ));
+            }
+        }
+
+        self.user_storage
+            .update_image(caller_id, image)
+            .await
+            .map_err(DomainError::from)?;
+
+        Ok(())
+    }
+
     pub async fn get_user(&self, user_id: Uuid) -> Result<UserDto, DomainError> {
         let user = self.user_storage.get_user_by_id(user_id).await?;
         Ok(UserDto::from(user))
@@ -1128,8 +1175,9 @@ impl AuthApplicationService {
             .await
         {
             Ok(mut existing_user) => {
-                // User exists — update last login
+                // User exists — update last login and sync avatar from IdP
                 existing_user.register_login();
+                existing_user.set_image(claims.picture.clone());
                 self.user_storage.update_user(existing_user.clone()).await?;
                 existing_user
             }
@@ -1206,7 +1254,7 @@ impl AuthApplicationService {
                     username = format!("{}_{}", &username[..username.len().min(27)], suffix);
                 }
 
-                let new_user = User::new_oidc(
+                let mut new_user = User::new_oidc(
                     username.clone(),
                     oidc_email,
                     role,
@@ -1221,6 +1269,7 @@ impl AuthApplicationService {
                         format!("Failed to create OIDC user: {}", e),
                     )
                 })?;
+                new_user.set_image(claims.picture.clone());
 
                 let created_user = self.user_storage.create_user(new_user).await?;
 

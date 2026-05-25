@@ -201,7 +201,7 @@ fn user_to_contact(user: UserDto) -> ContactDto {
         organization: Some("OxiCloud".to_string()),
         title: None,
         notes: None,
-        photo_url: None,
+        photo_url: user.image.clone(),
         birthday: None,
         anniversary: None,
         created_at: user.created_at,
