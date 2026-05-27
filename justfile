@@ -77,7 +77,7 @@ front-test:
 
 # update images snapshots
 front-test-update-snapshot:
-    cd tests/e2e && npm test -- --update-snapshots
+    cd tests/e2e && npm test -- --update-snapshots=all
 
 # Hurl API functional tests (starts postgres + server, tears down after)
 api-test:

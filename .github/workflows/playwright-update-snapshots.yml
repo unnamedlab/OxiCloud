@@ -34,7 +34,7 @@ jobs:
       run: npx playwright install --with-deps
 
     - name: Update snapshots
-      run: npm test -- --update-snapshots
+      run: npm test -- --update-snapshots=all
       env:
         BUILD_TARGET: release
 
