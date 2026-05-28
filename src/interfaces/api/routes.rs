@@ -331,10 +331,14 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
     // Create a router without the i18n routes
     // Create routes for favorites if the service is available
     let favorites_router = if let Some(favorites_service) = favorites_service.clone() {
-        use crate::interfaces::api::handlers::favorites_handler;
+        #[allow(deprecated)]
+        use crate::interfaces::api::handlers::favorites_handler::{
+            self, get_favorites, list_favorites_resources,
+        };
 
         Router::new()
-            .route("/", get(favorites_handler::get_favorites))
+            .route("/", get(get_favorites)) // deprecated, kept for compat
+            .route("/resources", get(list_favorites_resources)) // new cursor-paginated endpoint
             .route("/batch", post(favorites_handler::batch_add_favorites))
             .route(
                 "/{item_type}/{item_id}",

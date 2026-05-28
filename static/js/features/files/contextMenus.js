@@ -122,7 +122,7 @@ const contextMenus = {
                 // Check if folder is already in favorites to toggle
                 if (favorites?.isFavorite(folder.id, 'folder')) {
                     // Remove from favorites
-                    const ok = await favorites.removeFromFavorites(folder.id, 'folder');
+                    const ok = await favorites.removeFromFavorites(folder.id, 'folder', folder.name);
                     if (ok && ui && typeof ui.setFavoriteVisualState === 'function') {
                         ui.setFavoriteVisualState(folder.id, 'folder', false);
                     }
@@ -244,7 +244,7 @@ const contextMenus = {
                 // Check if file is already in favorites to toggle
                 if (favorites?.isFavorite(file.id, 'file')) {
                     // Remove from favorites
-                    const ok = await favorites.removeFromFavorites(file.id, 'file');
+                    const ok = await favorites.removeFromFavorites(file.id, 'file', file.name);
                     if (ok && ui && typeof ui.setFavoriteVisualState === 'function') {
                         ui.setFavoriteVisualState(file.id, 'file', false);
                     }

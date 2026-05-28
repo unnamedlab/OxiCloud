@@ -2,8 +2,11 @@ use std::collections::HashSet;
 
 use uuid::Uuid;
 
-use crate::application::dtos::favorites_dto::{BatchFavoritesResult, FavoriteItemDto};
+use crate::application::dtos::favorites_dto::{
+    BatchFavoritesResult, FavoriteItemDto, FavoriteResourceRow, FavoritesCursor,
+};
 use crate::common::errors::Result;
+use crate::domain::services::authorization::ResourceKind;
 
 /// Defines operations for managing user favorites
 pub trait FavoritesUseCase: Send + Sync {
@@ -74,4 +77,17 @@ pub trait FavoritesRepositoryPort: Send + Sync + 'static {
         user_id: Uuid,
         item_ids: &[(&str, &str)], // (item_id, item_type) pairs
     ) -> Result<HashSet<String>>;
+
+    /// Cursor-paginated list of a user's favorited resources.
+    /// Items that no longer exist (deleted/trashed) are silently excluded.
+    /// `kinds = None` → both files and folders.
+    async fn list_resources_paged(
+        &self,
+        user_id: Uuid,
+        limit: usize,
+        cursor: Option<&FavoritesCursor>,
+        order_by: &str,
+        kinds: Option<&[ResourceKind]>,
+        reverse: bool,
+    ) -> Result<Vec<FavoriteResourceRow>>;
 }

@@ -1,29 +1,27 @@
 /**
  * OxiCloud - Favorites Module (server-authoritative)
  *
- * Source of truth: GET /api/favorites (enriched with name/size/mime via SQL JOIN).
- * Local in-memory cache (`_cache`) keeps `isFavorite()` synchronous for the
- * rendering path so star icons can be painted without a round-trip.
+ * Source of truth: GET /api/favorites/resources (cursor-paginated).
+ * The in-memory cache (`_cache`) is a Set of "type:id" keys that keeps
+ * `isFavorite()` synchronous so star icons are painted without a round-trip.
+ *
+ * Display is handled by `views/favorites/favoritesView.js`.
  */
 
 import { ui } from '../../app/ui.js';
-import { ResourceListComponent } from '../../components/resourceList.js';
 import { getCsrfHeaders } from '../../core/csrf.js';
 import { i18n } from '../../core/i18n.js';
-import { batchToolbar } from '../files/batchToolbar.js';
-import * as pathTooltip from '../pathTooltip.js';
-
-/** @import {FavoriteItem, FileItem, FolderItem} from '../../core/types.js' */
+import { fetchFavoritesPage } from '../../model/favoritesModel.js';
 
 const favorites = {
-    /** @type {Map<string, FavoriteItem>} key = "file:<id>" | "folder:<id>" */
-    _cache: new Map(),
+    /**
+     * Set of "type:id" cache keys. A Set is enough — we only need O(1) lookups.
+     * @type {Set<string>}
+     */
+    _cache: new Set(),
 
-    /** Whether the initial fetch from the server has completed */
+    /** Whether the initial fetch from the server has completed. */
     _ready: false,
-
-    /** @type {ResourceListComponent|null} */
-    _component: null,
 
     // ───────────────────── helpers ─────────────────────
 
@@ -34,56 +32,43 @@ const favorites = {
     /**
      * @param {string} id
      * @param {string} type
+     * @returns {string}
      */
     _cacheKey(id, type) {
         return `${type}:${id}`;
     },
 
-    /**
-     * Replace the entire in-memory cache from an array of FavoriteItemDto
-     * objects (as returned by the batch endpoint). Avoids an extra
-     * GET /api/favorites round-trip.
-     * @param {any[]} items
-     */
-    _replaceCacheFromResponse(items) {
-        this._cache.clear();
-        for (const item of items) {
-            this._cache.set(this._cacheKey(item.item_id, item.item_type), item);
-        }
-        this._ready = true;
-        console.log(`Favorites cache replaced from response: ${this._cache.size} items`);
-    },
-
     // ───────────────────── lifecycle ─────────────────────
 
     /**
-     * Initialise the module: fetch the full list from the server and populate
-     * the in-memory cache.  Called once from app.js on startup.
+     * Initialise the module: fetch the full favorites list from the server and
+     * populate the in-memory cache.  Called from navigation.js every time the
+     * Favorites section is entered (non-blocking — the view loads in parallel).
      */
     async init() {
-        console.log('Initializing favorites module (server-authoritative)');
         await this._fetchFromServer();
     },
 
     /**
-     * Fetch favourites from the backend and rebuild the cache.
+     * Fetch all favorited resource IDs from the server and rebuild the cache.
+     * Paginates through `GET /api/favorites/resources` until exhausted.
      */
     async _fetchFromServer() {
         try {
-            const response = await fetch('/api/favorites', {
-                headers: this._authHeaders()
-            });
-
-            if (!response.ok) {
-                console.warn(`Favorites API returned ${response.status}`);
-                return;
-            }
-
-            /** @type {FavoriteItem[]} */
-            const items = await response.json();
             this._cache.clear();
-            for (const item of items) {
-                this._cache.set(this._cacheKey(item.item_id, item.item_type), item);
+
+            let cursor = /** @type {string|undefined} */ (undefined);
+
+            // Paginate with the max page size so most users need only one request.
+            while (true) {
+                const data = await fetchFavoritesPage({ limit: 200, cursor, orderBy: 'name' });
+                for (const item of data.items) {
+                    // `item.resource.id` works for both FileItem (id) and FolderItem (id).
+                    const r = /** @type {Record<string, string>} */ (/** @type {unknown} */ (item.resource));
+                    this._cache.add(this._cacheKey(r.id, item.resource_type));
+                }
+                if (!data.next_cursor) break;
+                cursor = data.next_cursor;
             }
 
             this._ready = true;
@@ -96,20 +81,22 @@ const favorites = {
     // ───────────────────── public API ─────────────────────
 
     /**
-     * Synchronous check used by ui.js to paint star icons.
+     * Synchronous check used by the rendering layer to paint star icons.
      * @param {string} id
      * @param {string} type
+     * @returns {boolean}
      */
     isFavorite(id, type) {
         return this._cache.has(this._cacheKey(id, type));
     },
 
     /**
-     * Add an item to favourites (server-first).
+     * Add an item to favourites (server-first, then update local cache).
      * @param {string} id
      * @param {string} name
      * @param {string} type
-     * @param {string | null} _parentId
+     * @param {string | null} _parentId  - unused, kept for call-site compatibility
+     * @returns {Promise<boolean>}
      */
     async addToFavorites(id, name, type, _parentId) {
         try {
@@ -122,10 +109,9 @@ const favorites = {
                 throw new Error(`Server returned ${response.status}`);
             }
 
-            // Refresh cache from server to get enriched data
-            await this._fetchFromServer();
+            // Optimistically update local cache without a full re-fetch.
+            this._cache.add(this._cacheKey(id, type));
 
-            // Notify user
             if (ui?.showNotification) {
                 ui.showNotification(i18n.t('favorites.added_title'), `"${name}" ${i18n.t('favorites.added_msg')}`);
             }
@@ -138,16 +124,14 @@ const favorites = {
     },
 
     /**
-     * Remove an item from favourites (server-first).
+     * Remove an item from favourites (server-first, then update local cache).
      * @param {string} id
      * @param {string} type
+     * @param {string} [name]  - Display name for the notification; falls back to `id`.
+     * @returns {Promise<boolean>}
      */
-    async removeFromFavorites(id, type) {
+    async removeFromFavorites(id, type, name = id) {
         try {
-            // Remember name for notification before removing from cache
-            const cached = this._cache.get(this._cacheKey(id, type));
-            const itemName = cached?.item_name || id;
-
             const response = await fetch(`/api/favorites/${type}/${id}`, {
                 method: 'DELETE',
                 headers: this._authHeaders()
@@ -157,11 +141,10 @@ const favorites = {
                 throw new Error(`Server returned ${response.status}`);
             }
 
-            // Remove from local cache
             this._cache.delete(this._cacheKey(id, type));
 
             if (ui?.showNotification) {
-                ui.showNotification(i18n.t('favorites.removed_title'), `"${itemName}" ${i18n.t('favorites.removed_msg')}`);
+                ui.showNotification(i18n.t('favorites.removed_title'), `"${name}" ${i18n.t('favorites.removed_msg')}`);
             }
 
             return true;
@@ -171,124 +154,32 @@ const favorites = {
         }
     },
 
-    // ───────────────────── display ─────────────────────
-
     /**
-     * Render the favourites view.  All data comes from the in-memory cache
-     * (which was populated from the enriched backend response — zero extra
-     * fetches).
+     * Batch-add multiple items to favourites in a single server call.
+     * Re-fetches the cache after success to stay consistent.
+     *
+     * @param {Array<{item_id: string, item_type: string}>} items
+     * @returns {Promise<boolean>}
      */
-    async displayFavorites() {
+    async batchAdd(items) {
         try {
+            const response = await fetch('/api/favorites/batch', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...this._authHeaders() },
+                body: JSON.stringify({ items })
+            });
+
+            if (!response.ok) {
+                throw new Error(`Server returned ${response.status}`);
+            }
+
+            // Re-fetch the full cache so the Set reflects the latest server state.
             await this._fetchFromServer();
 
-            ui.resetFilesList();
-            batchToolbar.init();
-            ui.updateBreadcrumb();
-
-            if (this._cache.size === 0) {
-                ui.showError(`
-                    <i class="fas fa-star empty-state-icon"></i>
-                    <p>${i18n.t('favorites.empty_state')}</p>
-                    <p>${i18n.t('favorites.empty_hint')}</p>
-                `);
-                return;
-            }
-
-            /** @type {Array<FileItem|FolderItem>} */
-            const items = [];
-
-            for (const item of this._cache.values()) {
-                // owner_id comes from the backend JOIN (actual file/folder owner)
-                if (item.item_type === 'folder') {
-                    items.push(
-                        /** @type {FolderItem} */ ({
-                            id: item.item_id,
-                            name: item.item_name || item.item_id,
-                            parent_id: item.parent_id || '',
-                            modified_at: item.modified_at || item.created_at,
-                            path: item.item_path || '',
-                            category: 'folder',
-                            created_at: item.created_at,
-                            icon_class: item.icon_class,
-                            icon_special_class: item.icon_special_class,
-                            owner_id: item.owner_id ?? '',
-                            is_root: false
-                        })
-                    );
-                } else {
-                    items.push(
-                        /** @type {FileItem} */ ({
-                            id: item.item_id,
-                            name: item.item_name || item.item_id,
-                            folder_id: item.parent_id || '',
-                            mime_type: item.item_mime_type,
-                            icon_class: item.icon_class,
-                            icon_special_class: item.icon_special_class,
-                            category: item.category,
-                            size: item.item_size || 0,
-                            size_formatted: item.size_formatted,
-                            modified_at: item.modified_at || item.created_at,
-                            path: item.item_path || '',
-                            owner_id: item.owner_id ?? '',
-                            created_at: item.created_at,
-                            sort_date: item.created_at
-                        })
-                    );
-                }
-            }
-
-            const filesList = document.getElementById('files-list');
-            if (filesList) {
-                if (!this._component) {
-                    this._component = new ResourceListComponent(/** @type {HTMLElement} */ (filesList), {
-                        selectable: true,
-                        showFavorite: true,
-                        showOwner: true,
-                        showShareBadge: true,
-                        draggable: false,
-                        showContextMenu: true,
-                        itemModifierClass: 'favorite-item',
-                        isFavorite: (id, type) => this.isFavorite(id, type),
-                        onOpen: (item) => ui.openItem(item),
-                        onFavoriteToggle: async (item) => {
-                            const isFile = 'mime_type' in item;
-                            const type = isFile ? 'file' : 'folder';
-                            if (this.isFavorite(item.id, type)) {
-                                await this.removeFromFavorites(item.id, type);
-                                this._component?.setFavoriteVisualState(item.id, type, false);
-                            } else {
-                                await this.addToFavorites(item.id, item.name, type, null);
-                                this._component?.setFavoriteVisualState(item.id, type, true);
-                            }
-                        },
-                        onContextMenu: (item, e) => ui.showContextMenuForItem(item, e),
-                        onSelectionChange: (selectedItems) => {
-                            batchToolbar._selected.clear();
-                            for (const sel of selectedItems) {
-                                const isFile = 'mime_type' in sel;
-                                batchToolbar._selected.set(sel.id, {
-                                    id: sel.id,
-                                    name: sel.name,
-                                    type: isFile ? 'file' : 'folder',
-                                    parentId: isFile ? /** @type {FileItem} */ (sel).folder_id || '' : /** @type {FolderItem} */ (sel).parent_id || ''
-                                });
-                            }
-                            batchToolbar._syncUI();
-                        }
-                    });
-                }
-                batchToolbar.setActiveComponent(this._component);
-                this._component.render(items);
-                pathTooltip.init(filesList);
-            }
-
-            await this._component?.resolveOwnerCells();
-        } catch (error) {
-            console.error('Error displaying favorites:', error);
-            if (ui?.showNotification) {
-                ui.showNotification('Error', 'Error loading favorite items');
-            }
+            return true;
+        } catch (err) {
+            console.error('Error in batchAdd:', err);
+            return false;
         }
     }
 };

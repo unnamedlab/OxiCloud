@@ -4,11 +4,14 @@ use std::sync::Arc;
 use tracing::info;
 use uuid::Uuid;
 
+use crate::application::dtos::cursor::PageCursor;
 use crate::application::dtos::favorites_dto::{
-    BatchFavoritesResult, BatchFavoritesStats, FavoriteItemDto,
+    BatchFavoritesResult, BatchFavoritesStats, FavoriteItemDto, FavoriteResourceRow,
+    FavoritesCursor,
 };
 use crate::application::ports::favorites_ports::{FavoritesRepositoryPort, FavoritesUseCase};
 use crate::common::errors::{DomainError, ErrorKind, Result};
+use crate::domain::services::authorization::ResourceKind;
 use crate::infrastructure::repositories::pg::FavoritesPgRepository;
 
 /// Implementation of the FavoritesUseCase for managing user favorites.
@@ -153,5 +156,107 @@ impl FavoritesUseCase for FavoritesService {
         item_ids: &[(&str, &str)],
     ) -> Result<HashSet<String>> {
         self.repo.batch_check_favorites(user_id, item_ids).await
+    }
+}
+
+impl FavoritesService {
+    /// Cursor-paginated list of the user's favorited resources.
+    ///
+    /// No authz needed — favorites are strictly user-scoped; the repository
+    /// enforces `WHERE user_id = $1` so users can only see their own entries.
+    ///
+    /// Returns `(rows, next_cursor_encoded)`.
+    pub async fn list_resources_paged(
+        &self,
+        user_id: Uuid,
+        limit: usize,
+        cursor: Option<FavoritesCursor>,
+        order_by: &str,
+        kinds: Option<&[ResourceKind]>,
+        reverse: bool,
+    ) -> Result<(Vec<FavoriteResourceRow>, Option<String>)> {
+        // Fetch one extra row to detect whether a next page exists.
+        let mut rows = self
+            .repo
+            .list_resources_paged(
+                user_id,
+                limit + 1,
+                cursor.as_ref(),
+                order_by,
+                kinds,
+                reverse,
+            )
+            .await?;
+
+        let next_cursor = if rows.len() > limit {
+            let last = &rows[limit - 1];
+            let c = build_favorites_cursor(last, order_by, reverse);
+            rows.truncate(limit);
+            Some(c.encode())
+        } else {
+            None
+        };
+
+        Ok((rows, next_cursor))
+    }
+}
+
+/// Build the next-page cursor from the last row of the current page.
+/// `reverse` is stored in the cursor so subsequent pages use the same direction.
+fn build_favorites_cursor(
+    row: &FavoriteResourceRow,
+    order_by: &str,
+    reverse: bool,
+) -> FavoritesCursor {
+    match order_by {
+        "type" => FavoritesCursor {
+            order_by: "type".to_owned(),
+            resource_id: row.resource_id,
+            sort_str: row.sort_str.clone(), // LOWER(name)
+            sort_int: row.sort_int,         // type_order
+            sort_ts: None,
+            reverse,
+        },
+        "favorited_at" => FavoritesCursor {
+            order_by: "favorited_at".to_owned(),
+            resource_id: row.resource_id,
+            sort_str: None,
+            sort_int: None,
+            sort_ts: row.sort_ts, // favorited_at timestamp
+            reverse,
+        },
+        "modified_at" => FavoritesCursor {
+            order_by: "modified_at".to_owned(),
+            resource_id: row.resource_id,
+            sort_str: None,
+            sort_int: None,
+            sort_ts: row.sort_ts, // modified_at timestamp
+            reverse,
+        },
+        "size" => FavoritesCursor {
+            order_by: "size".to_owned(),
+            resource_id: row.resource_id,
+            sort_str: None,
+            sort_int: row.sort_int, // file size in bytes
+            sort_ts: None,
+            reverse,
+        },
+        "owner" => FavoritesCursor {
+            order_by: "owner".to_owned(),
+            resource_id: row.resource_id,
+            sort_str: row.sort_str.clone(), // LOWER(username)
+            sort_int: None,
+            sort_ts: row.sort_ts, // favorited_at (secondary sort)
+            reverse,
+        },
+        _ => FavoritesCursor {
+            // "name" (default): sort_str = LOWER(name), sort_int = folder_first (0 = folder, 1 = file)
+            order_by: "name".to_owned(),
+            resource_id: row.resource_id,
+            sort_str: row.sort_str.clone(),
+            sort_int: row.sort_int, // folder_first
+            sort_ts: None,
+            reverse,
+        },
     }
 }

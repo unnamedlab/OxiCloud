@@ -208,7 +208,7 @@ function _ensureComponent() {
                 const isFile = 'mime_type' in item;
                 const type = isFile ? 'file' : 'folder';
                 if (favorites.isFavorite(item.id, type)) {
-                    await favorites.removeFromFavorites(item.id, type);
+                    await favorites.removeFromFavorites(item.id, type, item.name);
                     _component?.setFavoriteVisualState(item.id, type, false);
                 } else {
                     await favorites.addToFavorites(item.id, item.name, type, null);

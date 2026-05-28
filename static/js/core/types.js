@@ -334,6 +334,22 @@
  */
 
 /**
+ * One item returned by `GET /api/favorites/resources`.
+ * `resource_type` discriminates the shape of `resource`.
+ * @typedef {Object} FavoritesResourceItem
+ * @property {ResourceTypeEnum}    resource_type  - 'file' | 'folder'
+ * @property {string}              favorited_at   - ISO-8601 timestamp when the item was starred.
+ * @property {FileItem|FolderItem} resource       - Full resource details; shape follows resource_type.
+ */
+
+/**
+ * Response for `GET /api/favorites/resources`.
+ * @typedef {Object} FavoritesResourcesResponse
+ * @property {FavoritesResourceItem[]}  items
+ * @property {string|undefined}         [next_cursor]  - Absent when the last page is reached.
+ */
+
+/**
  * @typedef {Object} ContactEmail
  * @property {string}  email
  * @property {string}  type        - e.g. "work", "home"

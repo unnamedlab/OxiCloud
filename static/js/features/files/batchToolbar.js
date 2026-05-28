@@ -508,12 +508,8 @@ const batchToolbar = {
             const data = await response.json();
             const inserted = data.stats?.inserted || 0;
 
-            // Replace cache directly from response (no extra GET)
-            if (data.favorites && favorites._replaceCacheFromResponse) {
-                favorites._replaceCacheFromResponse(data.favorites);
-            } else {
-                await favorites._fetchFromServer();
-            }
+            // Re-fetch the isFavorite cache from the server.
+            await favorites._fetchFromServer();
 
             this.clear();
             loadFiles();

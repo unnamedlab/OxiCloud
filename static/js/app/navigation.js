@@ -9,6 +9,7 @@ import { favorites } from '../features/library/favorites.js';
 import { musicView } from '../features/library/music.js';
 import { photosView } from '../features/library/photos.js';
 import { recent } from '../features/library/recent.js';
+import { favoritesView } from '../views/favorites/favoritesView.js';
 import { sharedView } from '../views/shared/sharedView.js';
 import { sharedWithMeView } from '../views/sharedWithMe/sharedWithMeView.js';
 import { filesView, loadFiles } from './filesView.js';
@@ -164,6 +165,11 @@ function setCurrentSection(section) {
         sharedWithMeView.hide();
     }
 
+    // Hide favoritesView "Load more" button when leaving the favorites section
+    if (section !== 'favorites' && favoritesView) {
+        favoritesView.hide();
+    }
+
     // Reset owner column — sections that need it re-enable it explicitly below.
     ui.setOwnerColumnVisible(false);
 
@@ -273,8 +279,8 @@ function switchToFavoritesSection() {
 
     // Set actions bar mode
     setActionsBarMode('favorites');
-    setGroupByView(null);
-    syncGroupByMenu([]);
+    setGroupByView(favoritesView);
+    syncGroupByMenu(favoritesView.groupByDefs);
 
     // Show the Owner column — names are resolved async after render.
     ui.setOwnerColumnVisible(true);
@@ -289,23 +295,13 @@ function switchToFavoritesSection() {
     // ensure correct view
     syncViewContainers();
 
-    //reset files view + remove any error
-    ui.resetFilesList();
-
-    if (favorites) {
-        // temp solution
-        sharedView.loadItems().then(() => {
-            favorites.displayFavorites();
-        });
-    } else {
-        console.error('Favorites module not loaded or initialized');
-        ui.showError(`
-                <i class="fas fa-exclamation-circle empty-state-icon error"></i>
-                <p>Error loading the favorites module</p>
-            `);
-    }
-
     if (batchToolbar) batchToolbar.clear();
+
+    // Prefetch isFavorite cache in background (non-blocking)
+    favorites.init();
+
+    // Load and render via the cursor-paginated view
+    favoritesView.init();
 }
 
 function switchToRecentFilesSection() {

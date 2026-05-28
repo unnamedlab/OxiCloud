@@ -1,10 +1,14 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
+use utoipa::{IntoParams, ToSchema};
+use uuid::Uuid;
 
+use super::cursor::{CursorListResponse, CursorQuery, PageCursor};
 use super::display_helpers::{
     category_for, format_file_size, icon_class_for, icon_special_class_for,
 };
+use super::grant_dto::{ResourceContentDto, ResourceTypeDto};
+use crate::domain::services::authorization::ResourceKind;
 
 /// DTO for favorites item, enriched with item metadata via SQL JOIN
 /// so the frontend does not need N+1 requests to resolve names/sizes.
@@ -103,6 +107,120 @@ pub struct BatchFavoritesResult {
     /// replace its local cache in a single round-trip.
     pub favorites: Vec<FavoriteItemDto>,
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+// Cursor-paginated favorites resources  (GET /api/favorites/resources)
+// ════════════════════════════════════════════════════════════════════════════
+
+/// Raw row returned by the UNION ALL query that joins `auth.user_favorites`
+/// with `storage.files` / `storage.folders`.  Never serialised directly.
+pub struct FavoriteResourceRow {
+    pub resource_type: String, // "file" | "folder"
+    pub resource_id: Uuid,
+    pub name: String,
+    pub parent_id: Option<Uuid>,
+    pub mime_type: Option<String>,
+    /// `-1` for folders, actual byte-count for files.
+    pub size: i64,
+    pub resource_created_at: DateTime<Utc>,
+    pub modified_at: DateTime<Utc>,
+    pub owner_id: Uuid,
+    /// `true` when `owner_id == requesting user_id`.
+    pub is_owner: bool,
+    pub favorited_at: DateTime<Utc>,
+    /// Human-readable path (e.g. `Documents/Work` for a folder,
+    /// `Documents/Work/report.pdf` for a file).  Always populated; the
+    /// handler clears it to `""` when `is_owner` is false.
+    pub path: Option<String>,
+    // Pre-computed sort fields for cursor construction.
+    pub sort_str: Option<String>,
+    pub sort_int: Option<i64>,
+    pub sort_ts: Option<DateTime<Utc>>,
+}
+
+/// Opaque keyset-pagination cursor for `GET /api/favorites/resources`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FavoritesCursor {
+    /// Sort dimension active when this cursor was produced.
+    /// Values: `"name"` (default), `"type"`, `"favorited_at"`, `"modified_at"`,
+    /// `"size"`, `"owner"`.
+    #[serde(default = "FavoritesCursor::default_order")]
+    pub order_by: String,
+    /// UUID of the last item on the previous page (tie-breaker).
+    pub resource_id: Uuid,
+    /// `LOWER(name)` for `name`/`type` sorts; `LOWER(username)` for `owner`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sort_str: Option<String>,
+    /// Multipurpose integer: `folder_first` for `name`, `type_order` for `type`,
+    /// size in bytes for `size`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sort_int: Option<i64>,
+    /// Timestamp for `favorited_at` and `modified_at` sorts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sort_ts: Option<DateTime<Utc>>,
+    /// Whether the result set was reversed — must match on every page.
+    #[serde(default)]
+    pub reverse: bool,
+}
+
+impl FavoritesCursor {
+    fn default_order() -> String {
+        "name".to_owned()
+    }
+}
+
+impl PageCursor for FavoritesCursor {}
+
+/// Query parameters for `GET /api/favorites/resources`.
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct FavoritesResourcesQuery {
+    /// Maximum items per page (1–200, default 50).
+    #[serde(default = "CursorQuery::default_limit")]
+    pub limit: u32,
+    /// Opaque cursor from a previous response. Omit to start from the first page.
+    pub cursor: Option<String>,
+    /// Sort / group-by dimension. Supported: `"name"` (default), `"type"`,
+    /// `"favorited_at"`, `"modified_at"`, `"size"`, `"owner"`.
+    pub order_by: Option<String>,
+    /// Comma-separated resource types to include, e.g. `"file,folder"`.
+    /// Omit to include both.
+    pub resource_types: Option<String>,
+    /// Reverse the sort order. Default `false`.
+    #[serde(default)]
+    pub reverse: bool,
+}
+
+impl FavoritesResourcesQuery {
+    pub fn limit_clamped(&self) -> usize {
+        self.limit.clamp(1, 200) as usize
+    }
+
+    pub fn decode_cursor(&self) -> Option<FavoritesCursor> {
+        self.cursor.as_deref().and_then(FavoritesCursor::decode)
+    }
+
+    /// Returns `None` when `resource_types` is absent (= include all).
+    pub fn resource_kinds(&self) -> Option<Vec<ResourceKind>> {
+        self.resource_types.as_deref().map(|s| {
+            s.split(',')
+                .filter_map(|t| ResourceKind::parse(t.trim()))
+                .collect()
+        })
+    }
+}
+
+/// One item in a `GET /api/favorites/resources` page.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct FavoritesResourceItemDto {
+    pub resource_type: ResourceTypeDto,
+    /// When the resource was added to the user's favorites.
+    pub favorited_at: DateTime<Utc>,
+    /// Full resource details — shape determined by `resource_type`.
+    pub resource: ResourceContentDto,
+}
+
+/// Response envelope for `GET /api/favorites/resources`.
+pub type FavoritesResourcesDto = CursorListResponse<FavoritesResourceItemDto>;
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct BatchFavoritesStats {

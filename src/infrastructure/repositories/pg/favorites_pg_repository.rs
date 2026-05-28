@@ -4,9 +4,12 @@ use std::sync::Arc;
 use tracing::error;
 use uuid::Uuid;
 
-use crate::application::dtos::favorites_dto::FavoriteItemDto;
+use crate::application::dtos::favorites_dto::{
+    FavoriteItemDto, FavoriteResourceRow, FavoritesCursor,
+};
 use crate::application::ports::favorites_ports::FavoritesRepositoryPort;
 use crate::common::errors::{DomainError, ErrorKind, Result};
+use crate::domain::services::authorization::ResourceKind;
 
 /// PostgreSQL implementation of the favorites persistence port.
 pub struct FavoritesPgRepository {
@@ -278,5 +281,309 @@ impl FavoritesRepositoryPort for FavoritesPgRepository {
         })?;
 
         Ok(rows.iter().map(|r| r.get::<String, _>("item_id")).collect())
+    }
+
+    async fn list_resources_paged(
+        &self,
+        user_id: Uuid,
+        limit: usize,
+        cursor: Option<&FavoritesCursor>,
+        order_by: &str,
+        kinds: Option<&[ResourceKind]>,
+        reverse: bool,
+    ) -> Result<Vec<FavoriteResourceRow>> {
+        let include_folders =
+            kinds.is_none_or(|k| k.iter().any(|r| matches!(r, ResourceKind::Folder)));
+        let include_files = kinds.is_none_or(|k| k.iter().any(|r| matches!(r, ResourceKind::File)));
+
+        // ── Build the UNION ALL CTE ─────────────────────────────────────────
+        let mut cte_branches: Vec<&str> = Vec::new();
+
+        let folder_branch = r#"
+    SELECT
+        'folder'::text                   AS resource_type,
+        fld.id                           AS resource_id,
+        fld.name,
+        fld.parent_id,
+        NULL::text                       AS mime_type,
+        -1::bigint                       AS size,
+        fld.created_at                   AS resource_created_at,
+        fld.updated_at                   AS modified_at,
+        fld.user_id                      AS owner_id,
+        (fld.user_id = $1::uuid)         AS is_owner,
+        uf.created_at                    AS favorited_at,
+        fld.path::text                   AS resource_path,
+        LOWER(fld.name)                  AS sort_str,
+        0::bigint                        AS type_order,
+        0::int                           AS folder_first
+    FROM auth.user_favorites uf
+    INNER JOIN storage.folders fld
+           ON fld.id = uf.item_id::UUID AND NOT fld.is_trashed
+    WHERE uf.user_id = $1::uuid AND uf.item_type = 'folder'"#;
+
+        let file_branch = r#"
+    SELECT
+        'file'::text                     AS resource_type,
+        f.id                             AS resource_id,
+        f.name,
+        f.folder_id                      AS parent_id,
+        f.mime_type,
+        f.size::bigint,
+        f.created_at                     AS resource_created_at,
+        f.updated_at                     AS modified_at,
+        f.user_id                        AS owner_id,
+        (f.user_id = $1::uuid)           AS is_owner,
+        uf.created_at                    AS favorited_at,
+        COALESCE(pfld.path::text || '/' || f.name, f.name) AS resource_path,
+        LOWER(f.name)                    AS sort_str,
+        f.category_order::bigint         AS type_order,
+        1::int                           AS folder_first
+    FROM auth.user_favorites uf
+    INNER JOIN storage.files f
+           ON f.id = uf.item_id::UUID AND NOT f.is_trashed
+    LEFT JOIN storage.folders pfld
+           ON pfld.id = f.folder_id
+    WHERE uf.user_id = $1::uuid AND uf.item_type = 'file'"#;
+
+        if include_folders {
+            cte_branches.push(folder_branch);
+        }
+        if include_files {
+            cte_branches.push(file_branch);
+        }
+
+        if cte_branches.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let union_sql = cte_branches.join("\n    UNION ALL\n");
+        let cte = format!("WITH resources AS ({union_sql}\n)");
+
+        // ── Cursor values ───────────────────────────────────────────────────
+        let cur_str: Option<&str> = cursor.and_then(|c| c.sort_str.as_deref());
+        let cur_int: Option<i64> = cursor.and_then(|c| c.sort_int);
+        let cur_ts: Option<chrono::DateTime<chrono::Utc>> = cursor.and_then(|c| c.sort_ts);
+        let cur_id: Option<Uuid> = cursor.map(|c| c.resource_id);
+
+        // ── Per-dimension keyset WHERE + ORDER BY ───────────────────────────
+        // Binds: $1=user_id (in CTE), $2=cur_str, $3=cur_int, $4=cur_ts,
+        //        $5=cur_id, $6=limit (for "owner" sort: JOIN uses no extra binds)
+        let (keyset, order_by_clause, need_user_join) = match (order_by, reverse) {
+            // ── name ────────────────────────────────────────────────────────
+            ("name", false) => (
+                "WHERE ($3::bigint IS NULL)
+                    OR (folder_first::bigint > $3)
+                    OR (folder_first::bigint = $3 AND sort_str > $2)
+                    OR (folder_first::bigint = $3 AND sort_str = $2 AND resource_id > $5::uuid)",
+                "ORDER BY folder_first ASC, sort_str ASC, resource_id ASC",
+                false,
+            ),
+            ("name", true) => (
+                "WHERE ($3::bigint IS NULL)
+                    OR (folder_first::bigint > $3)
+                    OR (folder_first::bigint = $3 AND sort_str < $2)
+                    OR (folder_first::bigint = $3 AND sort_str = $2 AND resource_id < $5::uuid)",
+                "ORDER BY folder_first ASC, sort_str DESC, resource_id DESC",
+                false,
+            ),
+            // ── type ────────────────────────────────────────────────────────
+            ("type", false) => (
+                "WHERE ($3::bigint IS NULL)
+                    OR (type_order > $3)
+                    OR (type_order = $3 AND sort_str > $2)
+                    OR (type_order = $3 AND sort_str = $2 AND resource_id > $5::uuid)",
+                "ORDER BY type_order ASC, sort_str ASC, resource_id ASC",
+                false,
+            ),
+            ("type", true) => (
+                "WHERE ($3::bigint IS NULL)
+                    OR (type_order < $3)
+                    OR (type_order = $3 AND sort_str < $2)
+                    OR (type_order = $3 AND sort_str = $2 AND resource_id < $5::uuid)",
+                "ORDER BY type_order DESC, sort_str DESC, resource_id DESC",
+                false,
+            ),
+            // ── favorited_at ─────────────────────────────────────────────────
+            ("favorited_at", false) => (
+                "WHERE ($4::timestamptz IS NULL)
+                    OR (favorited_at < $4)
+                    OR (favorited_at = $4 AND resource_id < $5::uuid)",
+                "ORDER BY favorited_at DESC, resource_id DESC",
+                false,
+            ),
+            ("favorited_at", true) => (
+                "WHERE ($4::timestamptz IS NULL)
+                    OR (favorited_at > $4)
+                    OR (favorited_at = $4 AND resource_id > $5::uuid)",
+                "ORDER BY favorited_at ASC, resource_id ASC",
+                false,
+            ),
+            // ── modified_at ──────────────────────────────────────────────────
+            ("modified_at", false) => (
+                "WHERE ($4::timestamptz IS NULL)
+                    OR (modified_at < $4)
+                    OR (modified_at = $4 AND resource_id < $5::uuid)",
+                "ORDER BY modified_at DESC, resource_id DESC",
+                false,
+            ),
+            ("modified_at", true) => (
+                "WHERE ($4::timestamptz IS NULL)
+                    OR (modified_at > $4)
+                    OR (modified_at = $4 AND resource_id > $5::uuid)",
+                "ORDER BY modified_at ASC, resource_id ASC",
+                false,
+            ),
+            // ── size ─────────────────────────────────────────────────────────
+            ("size", false) => (
+                "WHERE ($3::bigint IS NULL)
+                    OR (size > $3)
+                    OR (size = $3 AND resource_id > $5::uuid)",
+                "ORDER BY size ASC, resource_id ASC",
+                false,
+            ),
+            ("size", true) => (
+                "WHERE ($3::bigint IS NULL)
+                    OR (size < $3)
+                    OR (size = $3 AND resource_id < $5::uuid)",
+                "ORDER BY size DESC, resource_id DESC",
+                false,
+            ),
+            // ── owner ────────────────────────────────────────────────────────
+            ("owner", false) => (
+                "WHERE ($2::text IS NULL)
+                    OR (LOWER(u.username) > $2)
+                    OR (LOWER(u.username) = $2 AND favorited_at < $4)
+                    OR (LOWER(u.username) = $2 AND favorited_at = $4 AND resource_id < $5::uuid)",
+                "ORDER BY LOWER(u.username) ASC, favorited_at DESC, resource_id DESC",
+                true,
+            ),
+            ("owner", true) => (
+                "WHERE ($2::text IS NULL)
+                    OR (LOWER(u.username) < $2)
+                    OR (LOWER(u.username) = $2 AND favorited_at > $4)
+                    OR (LOWER(u.username) = $2 AND favorited_at = $4 AND resource_id > $5::uuid)",
+                "ORDER BY LOWER(u.username) DESC, favorited_at ASC, resource_id ASC",
+                true,
+            ),
+            // ── default: same as name, ascending ─────────────────────────────
+            (_, false) => (
+                "WHERE ($3::bigint IS NULL)
+                    OR (folder_first::bigint > $3)
+                    OR (folder_first::bigint = $3 AND sort_str > $2)
+                    OR (folder_first::bigint = $3 AND sort_str = $2 AND resource_id > $5::uuid)",
+                "ORDER BY folder_first ASC, sort_str ASC, resource_id ASC",
+                false,
+            ),
+            (_, true) => (
+                "WHERE ($3::bigint IS NULL)
+                    OR (folder_first::bigint > $3)
+                    OR (folder_first::bigint = $3 AND sort_str < $2)
+                    OR (folder_first::bigint = $3 AND sort_str = $2 AND resource_id < $5::uuid)",
+                "ORDER BY folder_first ASC, sort_str DESC, resource_id DESC",
+                false,
+            ),
+        };
+
+        let user_join = if need_user_join {
+            "LEFT JOIN auth.users u ON u.id = r.owner_id"
+        } else {
+            ""
+        };
+        // For "owner" sort the JOIN makes LOWER(u.username) available; add it to SELECT
+        // so the cursor can carry the correct sort key.
+        let username_col = if need_user_join {
+            ",\n    LOWER(u.username)                AS username_lower"
+        } else {
+            ""
+        };
+
+        let sql = format!(
+            "{cte}
+SELECT
+    r.resource_type, r.resource_id, r.name, r.parent_id,
+    r.mime_type, r.size, r.resource_created_at, r.modified_at,
+    r.owner_id, r.is_owner, r.favorited_at, r.resource_path,
+    r.sort_str, r.type_order, r.folder_first{username_col}
+FROM resources r
+{user_join}
+{keyset}
+{order_by_clause}
+LIMIT $6"
+        );
+
+        let rows = sqlx::query(&sql)
+            .bind(user_id) // $1 (in CTE + outer)
+            .bind(cur_str) // $2
+            .bind(cur_int) // $3
+            .bind(cur_ts) // $4
+            .bind(cur_id) // $5
+            .bind(limit as i64) // $6
+            .fetch_all(&*self.db_pool)
+            .await
+            .map_err(|e| {
+                error!("Database error listing favorite resources: {e}");
+                DomainError::new(
+                    ErrorKind::InternalError,
+                    "Favorites",
+                    format!("Failed to list favorite resources: {e}"),
+                )
+            })?;
+
+        let result = rows
+            .iter()
+            .map(|row| {
+                let resource_type: String = row.get("resource_type");
+                let sort_str_val: Option<String> = row.try_get("sort_str").ok();
+                let type_order: i64 = row.try_get("type_order").unwrap_or(0);
+                let folder_first: i32 = row.try_get("folder_first").unwrap_or(0);
+                let size: i64 = row.get("size");
+
+                // Pre-compute the cursor sort fields based on order_by
+                let (c_sort_str, c_sort_int, c_sort_ts) = match order_by {
+                    "name" => (sort_str_val, Some(folder_first as i64), None),
+                    "type" => (sort_str_val, Some(type_order), None),
+                    "size" => (None, Some(size), None),
+                    "favorited_at" => {
+                        let ts: Option<chrono::DateTime<chrono::Utc>> =
+                            row.try_get("favorited_at").ok();
+                        (None, None, ts)
+                    }
+                    "modified_at" => {
+                        let ts: Option<chrono::DateTime<chrono::Utc>> =
+                            row.try_get("modified_at").ok();
+                        (None, None, ts)
+                    }
+                    "owner" => {
+                        // For "owner" sort the JOIN added LOWER(u.username) AS username_lower.
+                        // The cursor's sort_str must carry the username (not the file name).
+                        let username: Option<String> = row.try_get("username_lower").ok();
+                        let ts: Option<chrono::DateTime<chrono::Utc>> =
+                            row.try_get("favorited_at").ok();
+                        (username, None, ts)
+                    }
+                    _ => (sort_str_val, Some(folder_first as i64), None),
+                };
+
+                FavoriteResourceRow {
+                    resource_type,
+                    resource_id: row.get("resource_id"),
+                    name: row.get("name"),
+                    parent_id: row.try_get("parent_id").ok(),
+                    mime_type: row.try_get("mime_type").ok(),
+                    size,
+                    resource_created_at: row.get("resource_created_at"),
+                    modified_at: row.get("modified_at"),
+                    owner_id: row.get("owner_id"),
+                    is_owner: row.try_get("is_owner").unwrap_or(false),
+                    favorited_at: row.get("favorited_at"),
+                    path: row.try_get("resource_path").ok(),
+                    sort_str: c_sort_str,
+                    sort_int: c_sort_int,
+                    sort_ts: c_sort_ts,
+                }
+            })
+            .collect();
+
+        Ok(result)
     }
 }

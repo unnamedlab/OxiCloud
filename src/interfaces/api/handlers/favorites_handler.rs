@@ -1,6 +1,6 @@
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
 };
@@ -9,8 +9,18 @@ use std::sync::Arc;
 use tracing::{error, info};
 use utoipa::ToSchema;
 
+use crate::application::dtos::display_helpers::{
+    category_for, format_file_size, icon_class_for, icon_special_class_for,
+};
+use crate::application::dtos::favorites_dto::{
+    FavoritesResourceItemDto, FavoritesResourcesDto, FavoritesResourcesQuery,
+};
+use crate::application::dtos::file_dto::FileDto;
+use crate::application::dtos::folder_dto::FolderDto;
+use crate::application::dtos::grant_dto::{ResourceContentDto, ResourceTypeDto};
 use crate::application::ports::favorites_ports::FavoritesUseCase;
 use crate::application::services::favorites_service::FavoritesService;
+use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::auth::AuthUser;
 
 /// Single item in a batch-add-favorites request.
@@ -27,11 +37,16 @@ pub struct BatchFavoritesRequest {
 }
 
 /// Handler for favorite-related API endpoints
+///
+/// # Deprecated
+/// Use `GET /api/favorites/resources` instead. This endpoint is kept for
+/// backwards compatibility but will be removed in a future release.
+#[deprecated = "Use GET /api/favorites/resources instead"]
 #[utoipa::path(
     get,
     path = "/api/favorites",
     responses(
-        (status = 200, description = "List of favorites", body = Vec<crate::application::dtos::favorites_dto::FavoriteItemDto>)
+        (status = 200, description = "List of favorites (deprecated — use /api/favorites/resources)", body = Vec<crate::application::dtos::favorites_dto::FavoriteItemDto>)
     ),
     security(("bearerAuth" = [])),
     tag = "favorites"
@@ -175,6 +190,125 @@ pub async fn remove_favorite(
                 })),
             )
         }
+    }
+}
+
+/// Cursor-paginated list of a user's favorited resources.
+///
+/// Supports sorting by `name`, `type`, `favorited_at`, `modified_at`, `size`, or `owner`.
+/// Items that have been deleted/trashed are silently excluded.
+/// `path` is cleared when the resource is not owned by the requesting user.
+#[utoipa::path(
+    get,
+    path = "/api/favorites/resources",
+    params(FavoritesResourcesQuery),
+    responses(
+        (status = 200, description = "Paginated list of favorited resources",
+         body = crate::application::dtos::favorites_dto::FavoritesResourcesDto),
+        (status = 400, description = "Invalid cursor or query parameters"),
+    ),
+    security(("bearerAuth" = [])),
+    tag = "favorites"
+)]
+pub async fn list_favorites_resources(
+    State(favorites_service): State<Arc<FavoritesService>>,
+    auth_user: AuthUser,
+    Query(q): Query<FavoritesResourcesQuery>,
+) -> impl IntoResponse {
+    let user_id = auth_user.id;
+
+    let order_by = q.order_by.as_deref().unwrap_or("name").to_owned();
+
+    // If a cursor exists, validate that it matches the requested sort/direction.
+    let cursor = q
+        .decode_cursor()
+        .filter(|c| c.order_by == order_by && c.reverse == q.reverse);
+
+    let kinds = q.resource_kinds();
+
+    match favorites_service
+        .list_resources_paged(
+            user_id,
+            q.limit_clamped(),
+            cursor,
+            &order_by,
+            kinds.as_deref(),
+            q.reverse,
+        )
+        .await
+    {
+        Ok((rows, next_cursor)) => {
+            let items: Vec<FavoritesResourceItemDto> = rows
+                .into_iter()
+                .map(|row| {
+                    // Path is only shown to the owner; non-owners see ""
+                    // to avoid leaking another user's folder hierarchy.
+                    let path = if row.is_owner {
+                        row.path.clone().unwrap_or_default()
+                    } else {
+                        String::new()
+                    };
+
+                    if row.resource_type == "folder" {
+                        let dto = FolderDto {
+                            id: row.resource_id.to_string(),
+                            name: row.name.clone(),
+                            path,
+                            parent_id: row.parent_id.map(|u| u.to_string()),
+                            owner_id: Some(row.owner_id.to_string()),
+                            created_at: row.resource_created_at.timestamp() as u64,
+                            modified_at: row.modified_at.timestamp() as u64,
+                            is_root: false,
+                            icon_class: std::sync::Arc::from("fas fa-folder"),
+                            icon_special_class: std::sync::Arc::from("folder-icon"),
+                            category: std::sync::Arc::from("Folder"),
+                        };
+                        FavoritesResourceItemDto {
+                            resource_type: ResourceTypeDto::Folder,
+                            favorited_at: row.favorited_at,
+                            resource: ResourceContentDto::Folder(dto),
+                        }
+                    } else {
+                        let mime = row
+                            .mime_type
+                            .as_deref()
+                            .unwrap_or("application/octet-stream");
+                        let size_bytes = row.size.max(0) as u64;
+                        let dto = FileDto {
+                            id: row.resource_id.to_string(),
+                            name: row.name.clone(),
+                            path,
+                            size: size_bytes,
+                            mime_type: std::sync::Arc::from(mime),
+                            folder_id: row.parent_id.map(|u| u.to_string()),
+                            created_at: row.resource_created_at.timestamp() as u64,
+                            modified_at: row.modified_at.timestamp() as u64,
+                            icon_class: std::sync::Arc::from(icon_class_for(&row.name, mime)),
+                            icon_special_class: std::sync::Arc::from(icon_special_class_for(
+                                &row.name, mime,
+                            )),
+                            category: std::sync::Arc::from(category_for(&row.name, mime)),
+                            size_formatted: format_file_size(size_bytes),
+                            owner_id: Some(row.owner_id.to_string()),
+                            sort_date: None,
+                            etag: String::new(),
+                        };
+                        FavoritesResourceItemDto {
+                            resource_type: ResourceTypeDto::File,
+                            favorited_at: row.favorited_at,
+                            resource: ResourceContentDto::File(dto),
+                        }
+                    }
+                })
+                .collect();
+
+            (
+                StatusCode::OK,
+                Json(FavoritesResourcesDto::with_cursor(items, next_cursor)),
+            )
+                .into_response()
+        }
+        Err(e) => AppError::from(e).into_response(),
     }
 }
 
