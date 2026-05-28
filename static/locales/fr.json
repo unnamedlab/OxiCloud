@@ -430,7 +430,8 @@
         "clear": "Effacer les récents",
         "accessed": "Consulté",
         "empty_state": "Aucun fichier récent",
-        "empty_hint": "Les fichiers que vous ouvrez apparaîtront ici"
+        "empty_hint": "Les fichiers que vous ouvrez apparaîtront ici",
+        "loadMore": "Charger plus"
     },
     "notifications": {
         "file_renamed": "Fichier renommé",
@@ -714,8 +715,15 @@
     "groupby": {
         "none": "Aucun",
         "title": "Grouper par",
+        "type": "Type",
+        "type.folders": "Dossiers",
         "owner": "Propriétaire",
-        "shareDate": "Date de partage"
+        "shareDate": "Date de partage",
+        "favoriteDate": "Date d'ajout aux favoris",
+        "accessedAt": "Date d'accès",
+        "modifiedAt": "Date de modification",
+        "createdAt": "Date de création",
+        "size": "Taille"
     },
     "dateBucket": {
         "today": "Aujourd'hui",

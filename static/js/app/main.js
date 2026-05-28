@@ -17,6 +17,7 @@ import { favorites } from '../features/library/favorites.js';
 import { recent } from '../features/library/recent.js';
 import { fileSharing } from '../features/sharing/fileSharing.js';
 import { grants } from '../model/grants.js';
+import { recentView } from '../views/recent/recentView.js';
 import { sharedView } from '../views/shared/sharedView.js';
 import { checkAuthentication } from './authSession.js';
 import { loadFiles } from './filesView.js';
@@ -345,8 +346,8 @@ function setupActionsBarDelegation() {
                 break;
             case 'clear-recent-btn':
                 if (recent) {
-                    recent.clearRecentFiles();
-                    recent.displayRecentFiles();
+                    await recent.clearRecentFiles();
+                    await recentView.init();
                     ui.showNotification('Cleanup completed', 'Recent files history has been cleared');
                 }
                 break;

@@ -51,4 +51,15 @@ pub trait RecentItemsRepositoryPort: Send + Sync + 'static {
 
     /// Removes items exceeding `max_items` (the oldest ones).
     async fn prune(&self, user_id: Uuid, max_items: i32) -> Result<()>;
+
+    /// List recent items with cursor pagination, sorting, and optional type filter.
+    async fn list_resources_paged(
+        &self,
+        user_id: Uuid,
+        limit: usize,
+        cursor: Option<&crate::application::dtos::recent_dto::RecentCursor>,
+        order_by: &str,
+        kinds: Option<&[crate::domain::services::authorization::ResourceKind]>,
+        reverse: bool,
+    ) -> Result<Vec<crate::application::dtos::recent_dto::RecentResourceRow>>;
 }

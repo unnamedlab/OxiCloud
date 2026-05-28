@@ -430,7 +430,8 @@
         "clear": "Clear recent",
         "accessed": "Accessed",
         "empty_state": "No recent files",
-        "empty_hint": "Files you open will appear here"
+        "empty_hint": "Files you open will appear here",
+        "loadMore": "Load more"
     },
     "notifications": {
         "file_renamed": "File renamed",
@@ -714,8 +715,15 @@
     "groupby": {
         "none": "None",
         "title": "Group by",
+        "type": "Type",
+        "type.folders": "Folders",
         "owner": "Owner",
-        "shareDate": "Share date"
+        "shareDate": "Share date",
+        "favoriteDate": "Favorite date",
+        "accessedAt": "Accessed date",
+        "modifiedAt": "Modified date",
+        "createdAt": "Created date",
+        "size": "Size"
     },
     "dateBucket": {
         "today": "Today",

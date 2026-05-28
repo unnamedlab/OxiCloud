@@ -41,9 +41,7 @@ function applyGroupByMenuState(groupBy, reversed) {
         if (groupBy === '') {
             lbl.textContent = '';
         } else {
-            const activeOpt = /** @type {HTMLElement|null} */ (
-                document.querySelector(`.group-by-option[data-group-by="${CSS.escape(groupBy)}"]`)
-            );
+            const activeOpt = /** @type {HTMLElement|null} */ (document.querySelector(`.group-by-option[data-group-by="${CSS.escape(groupBy)}"]`));
             lbl.textContent = activeOpt?.textContent ?? '';
         }
     }

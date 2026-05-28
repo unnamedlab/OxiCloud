@@ -355,10 +355,12 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
 
     // Create routes for recent items if the service is available
     let recent_router = if let Some(recent_service) = recent_service.clone() {
+        #[allow(deprecated)]
         use crate::interfaces::api::handlers::recent_handler;
 
         Router::new()
             .route("/", get(recent_handler::get_recent_items))
+            .route("/resources", get(recent_handler::list_recent_resources))
             .route(
                 "/{item_type}/{item_id}",
                 post(recent_handler::record_item_access),

@@ -10,8 +10,8 @@ import { batchToolbar } from '../features/files/batchToolbar.js';
 import { favorites } from '../features/library/favorites.js';
 import { musicView } from '../features/library/music.js';
 import { photosView } from '../features/library/photos.js';
-import { recent } from '../features/library/recent.js';
 import { favoritesView } from '../views/favorites/favoritesView.js';
+import { recentView } from '../views/recent/recentView.js';
 import { sharedView } from '../views/shared/sharedView.js';
 import { sharedWithMeView } from '../views/sharedWithMe/sharedWithMeView.js';
 import { filesView, loadFiles } from './filesView.js';
@@ -180,6 +180,11 @@ function setCurrentSection(section) {
         favoritesView.hide();
     }
 
+    // Hide recentView "Load more" button when leaving the recent section
+    if (section !== 'recent' && recentView) {
+        recentView.hide();
+    }
+
     // Reset owner column — sections that need it re-enable it explicitly below.
     ui.setOwnerColumnVisible(false);
 
@@ -332,10 +337,17 @@ function switchToFavoritesSection() {
 function switchToRecentFilesSection() {
     if (!setCurrentSection('recent')) return;
 
-    // Set actions bar mode
+    // Set actions bar mode with group-by support
     setActionsBarMode('recent');
-    setGroupByView(null);
-    syncGroupByMenu([]);
+    setGroupByView(recentView);
+    syncGroupByMenu(recentView.groupByDefs);
+
+    // Restore the saved group-by selection in the dropdown.
+    const recentPrefs = viewPrefs.load('recent');
+    applyGroupByMenuState(recentPrefs.groupBy, recentPrefs.reversed);
+
+    // Show the Owner column
+    ui.setOwnerColumnVisible(true);
 
     // Hide breadcrumb (only shown in Files view)
     const breadcrumb = document.querySelector('.breadcrumb');
@@ -348,21 +360,9 @@ function switchToRecentFilesSection() {
     restoreView('recent');
     syncViewContainers();
 
-    //reset files view + remove any error
-    ui.resetFilesList();
-
-    if (recent) {
-        sharedView.loadItems().then(() => {
-            recent.displayRecentFiles();
-        });
-    } else {
-        console.error('Recent files module not loaded or initialized');
-        ui.showError(`
-                <i class="fas fa-exclamation-circle empty-state-icon error"></i>
-                <p>Error loading the recent module</p>
-            `);
-    }
     if (batchToolbar) batchToolbar.clear();
+
+    recentView.init();
 }
 
 function switchToPhotosSection() {
