@@ -21,6 +21,7 @@ use crate::application::ports::recent_ports::RecentItemsUseCase;
 use crate::application::services::recent_service::RecentService;
 use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::auth::AuthUser;
+use uuid::Uuid;
 
 /// Query parameters for getting recent items
 #[derive(Deserialize)]
@@ -83,7 +84,7 @@ pub async fn get_recent_items(
 pub async fn record_item_access(
     State(recent_service): State<Arc<RecentService>>,
     auth_user: AuthUser,
-    Path((item_type, item_id)): Path<(String, String)>,
+    Path((item_type, item_id)): Path<(String, Uuid)>,
 ) -> impl IntoResponse {
     let user_id = auth_user.id;
 
@@ -99,7 +100,7 @@ pub async fn record_item_access(
     }
 
     match recent_service
-        .record_item_access(user_id, &item_id, &item_type)
+        .record_item_access(user_id, &item_id.to_string(), &item_type)
         .await
     {
         Ok(_) => {
@@ -143,12 +144,12 @@ pub async fn record_item_access(
 pub async fn remove_from_recent(
     State(recent_service): State<Arc<RecentService>>,
     auth_user: AuthUser,
-    Path((item_type, item_id)): Path<(String, String)>,
+    Path((item_type, item_id)): Path<(String, Uuid)>,
 ) -> impl IntoResponse {
     let user_id = auth_user.id;
 
     match recent_service
-        .remove_from_recent(user_id, &item_id, &item_type)
+        .remove_from_recent(user_id, &item_id.to_string(), &item_type)
         .await
     {
         Ok(removed) => {
