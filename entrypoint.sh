@@ -10,17 +10,17 @@ STORAGE_DIR="/app/storage"
 STATIC_DIR="/app/static"
 
 # Ensure the storage directory exists and is writable by oxicloud
-if [[ -d "$STORAGE_DIR" && "$(id -u)" -eq 0 ]]; then
+if [ -d "$STORAGE_DIR" ] && [ "$(id -u)" -eq 0 ]; then
     chown -R oxicloud:oxicloud "$STORAGE_DIR"
 fi
 
 # Ensure static directory is readable
-if [[ -d "$STATIC_DIR" && "$(id -u)" -eq 0 ]]; then
+if [ -d "$STATIC_DIR" ] && [ "$(id -u)" -eq 0 ]; then
     chown -R oxicloud:oxicloud "$STATIC_DIR"
 fi
 
 # Drop privileges and exec the main binary (or whatever was passed as CMD)
-if [[ "$(id -u)" -eq 0 ]]; then
+if [ "$(id -u)" -eq 0 ]; then
     exec su-exec oxicloud "$@"
 else
     oxicloud "$@"
