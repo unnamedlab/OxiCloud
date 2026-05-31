@@ -25,10 +25,21 @@ test-mocks:
 
 # DB-dependent integration tests gated on `--cfg integration_tests`.
 # Spins up the test postgres on port 5433 first. Requires one row in
-# auth.users (start the server against the test DB once to seed).
+# auth.users on the test DB (start the server against it once to seed).
+#
+# IMPORTANT: DATABASE_URL is pinned to the test container on port 5433
+# so a stray DATABASE_URL in `.env` (which `set dotenv-load` at the top
+# of this file would otherwise leak in) cannot point the tests at the
+# real dev DB. The test pool helpers also refuse non-`oxicloud_test`
+# URLs as defence in depth.
 test-integration:
     bash tests/common/spawn-db.sh
-    RUSTFLAGS='--cfg integration_tests' cargo test --workspace --tests
+    PGHOST=localhost PGPORT=5433 PGUSER=oxicloud_test PGPASSWORD=oxicloud_test \
+      PGDATABASE=oxicloud_test \
+      bash tests/common/init-test-schema.sh
+    DATABASE_URL='postgres://oxicloud_test:oxicloud_test@localhost:5433/oxicloud_test' \
+      RUSTFLAGS='--cfg integration_tests' \
+      cargo test --workspace --tests
 
 test-one name:
     cargo test {{name}}

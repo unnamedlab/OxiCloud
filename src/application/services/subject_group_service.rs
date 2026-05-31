@@ -398,16 +398,15 @@ mod integration_tests {
     use sqlx::Row;
     use sqlx::postgres::PgPoolOptions;
 
-    const DEFAULT_TEST_DB: &str =
-        "postgres://oxicloud_test:oxicloud_test@localhost:5433/oxicloud_test";
+    use crate::integration_test_support::{ensure_clean_test_db, test_db_url};
 
     async fn make_service() -> SubjectGroupService {
-        let url = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_TEST_DB.to_string());
         let pool = PgPoolOptions::new()
             .max_connections(2)
-            .connect(&url)
+            .connect(&test_db_url())
             .await
             .expect("connect to test DB — run tests/common/spawn-db.sh first");
+        ensure_clean_test_db(&pool).await;
         let pool = Arc::new(pool);
         let repo = Arc::new(SubjectGroupPgRepository::new(pool.clone()));
         SubjectGroupService::new(repo, pool)
