@@ -40,6 +40,13 @@ pub struct UserDto {
     /// `given_name`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub family_name: Option<String>,
+    /// When the user first demonstrated control of their email (PR 23).
+    /// `None` = unverified (omitted from JSON). Stamped on the first
+    /// successful magic-link redemption or OIDC JIT with verified
+    /// claim. Idempotent — the original timestamp is preserved on
+    /// subsequent verifications.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email_verified_at: Option<DateTime<Utc>>,
 }
 
 impl From<User> for UserDto {
@@ -61,6 +68,7 @@ impl From<User> for UserDto {
             is_external: user.is_external(),
             given_name: user.given_name().map(str::to_string),
             family_name: user.family_name().map(str::to_string),
+            email_verified_at: user.email_verified_at(),
         }
     }
 }

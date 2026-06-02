@@ -96,10 +96,10 @@ impl UserRepository for UserPgRepository {
                             storage_quota_bytes, storage_used_bytes,
                             created_at, updated_at, last_login_at, active,
                             oidc_provider, oidc_subject, is_external,
-                            given_name, family_name
+                            given_name, family_name, email_verified_at
                         ) VALUES (
                             $1, $2, $3, $4, $5::auth.userrole, $6, $7, $8, $9, $10, $11,
-                            $12, $13, $14, $15, $16
+                            $12, $13, $14, $15, $16, $17
                         )
                         RETURNING *
                         "#,
@@ -120,6 +120,7 @@ impl UserRepository for UserPgRepository {
                 .bind(user_clone.is_external())
                 .bind(user_clone.given_name())
                 .bind(user_clone.family_name())
+                .bind(user_clone.email_verified_at())
                 .execute(&mut **tx)
                 .await
                 .map_err(Self::map_sqlx_error)?;
@@ -144,7 +145,7 @@ impl UserRepository for UserPgRepository {
                 storage_quota_bytes, storage_used_bytes,
                 created_at, updated_at, last_login_at, active,
                 oidc_provider, oidc_subject, image, is_external,
-                given_name, family_name
+                given_name, family_name, email_verified_at
             FROM auth.users
             WHERE id = $1
             "#,
@@ -179,6 +180,7 @@ impl UserRepository for UserPgRepository {
             row.get("is_external"),
             row.get("given_name"),
             row.get("family_name"),
+            row.get("email_verified_at"),
         ))
     }
 
@@ -191,7 +193,7 @@ impl UserRepository for UserPgRepository {
                 storage_quota_bytes, storage_used_bytes,
                 created_at, updated_at, last_login_at, active,
                 oidc_provider, oidc_subject, image, is_external,
-                given_name, family_name
+                given_name, family_name, email_verified_at
             FROM auth.users
             WHERE username = $1
             "#,
@@ -226,6 +228,7 @@ impl UserRepository for UserPgRepository {
             row.get("is_external"),
             row.get("given_name"),
             row.get("family_name"),
+            row.get("email_verified_at"),
         ))
     }
 
@@ -238,7 +241,7 @@ impl UserRepository for UserPgRepository {
                 storage_quota_bytes, storage_used_bytes,
                 created_at, updated_at, last_login_at, active,
                 oidc_provider, oidc_subject, image, is_external,
-                given_name, family_name
+                given_name, family_name, email_verified_at
             FROM auth.users
             WHERE email = $1
             "#,
@@ -273,6 +276,7 @@ impl UserRepository for UserPgRepository {
             row.get("is_external"),
             row.get("given_name"),
             row.get("family_name"),
+            row.get("email_verified_at"),
         ))
     }
 
@@ -299,7 +303,8 @@ impl UserRepository for UserPgRepository {
                             active = $10,
                             image = $11,
                             given_name = $12,
-                            family_name = $13
+                            family_name = $13,
+                            email_verified_at = $14
                         WHERE id = $1
                         "#,
                 )
@@ -316,6 +321,7 @@ impl UserRepository for UserPgRepository {
                 .bind(user_clone.image())
                 .bind(user_clone.given_name())
                 .bind(user_clone.family_name())
+                .bind(user_clone.email_verified_at())
                 .execute(&mut **tx)
                 .await
                 .map_err(Self::map_sqlx_error)?;
@@ -388,7 +394,7 @@ impl UserRepository for UserPgRepository {
                 storage_quota_bytes, storage_used_bytes,
                 created_at, updated_at, last_login_at, active,
                 oidc_provider, oidc_subject, image, is_external,
-                given_name, family_name
+                given_name, family_name, email_verified_at
             FROM auth.users
             WHERE ($3 OR is_external = FALSE)
             ORDER BY created_at DESC
@@ -430,6 +436,7 @@ impl UserRepository for UserPgRepository {
                     row.get("is_external"),
                     row.get("given_name"),
                     row.get("family_name"),
+                    row.get("email_verified_at"),
                 )
             })
             .collect();
@@ -451,7 +458,7 @@ impl UserRepository for UserPgRepository {
                 storage_quota_bytes, storage_used_bytes,
                 created_at, updated_at, last_login_at, active,
                 oidc_provider, oidc_subject, image, is_external,
-                given_name, family_name
+                given_name, family_name, email_verified_at
             FROM auth.users
             WHERE (username ILIKE $1 OR email ILIKE $1)
               AND ($3 OR is_external = FALSE)
@@ -493,6 +500,7 @@ impl UserRepository for UserPgRepository {
                     row.get("is_external"),
                     row.get("given_name"),
                     row.get("family_name"),
+                    row.get("email_verified_at"),
                 )
             })
             .collect();
@@ -580,7 +588,7 @@ impl UserRepository for UserPgRepository {
                 storage_quota_bytes, storage_used_bytes,
                 created_at, updated_at, last_login_at, active,
                 oidc_provider, oidc_subject, image, is_external,
-                given_name, family_name
+                given_name, family_name, email_verified_at
             FROM auth.users
             WHERE role::text = $1
             ORDER BY created_at DESC
@@ -619,6 +627,7 @@ impl UserRepository for UserPgRepository {
                     row.get("is_external"),
                     row.get("given_name"),
                     row.get("family_name"),
+                    row.get("email_verified_at"),
                 )
             })
             .collect();
@@ -655,7 +664,7 @@ impl UserRepository for UserPgRepository {
                 storage_quota_bytes, storage_used_bytes,
                 created_at, updated_at, last_login_at, active,
                 oidc_provider, oidc_subject, image, is_external,
-                given_name, family_name
+                given_name, family_name, email_verified_at
             FROM auth.users
             WHERE oidc_provider = $1 AND oidc_subject = $2
             "#,
@@ -690,6 +699,7 @@ impl UserRepository for UserPgRepository {
             row.get("is_external"),
             row.get("given_name"),
             row.get("family_name"),
+            row.get("email_verified_at"),
         ))
     }
 

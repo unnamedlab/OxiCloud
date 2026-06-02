@@ -224,6 +224,9 @@ jsonpath "$.id" == "{{bob_user_id}}"
 jsonpath "$.is_external" == true
 jsonpath "$.email" == "bob@externalcompany.com"
 jsonpath "$.username" not exists
+# PR 23 — bob redeemed his invitation magic-link in Step 8, so his
+# email_verified_at was stamped at that time and stays set.
+jsonpath "$.email_verified_at" exists
 
 # 11d — bob CAN look up Alice (his granter) — shared-grant relationship
 #        lets the external recipient resolve the sharer's display name +
@@ -235,6 +238,9 @@ HTTP 200
 [Asserts]
 jsonpath "$.id" == "{{alice_user_id}}"
 jsonpath "$.is_external" == false
+# PR 23 — alice is the admin set up via classic password registration
+# and has never clicked a magic-link, so her email is unverified.
+jsonpath "$.email_verified_at" not exists
 
 # 11e — bob CANNOT enumerate unrelated users. A random UUID returns 404
 #        (anti-enumeration; same response as "user doesn't exist").

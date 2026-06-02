@@ -137,6 +137,11 @@ HTTP 200
 jsonpath "$.email" == "pr18-emailonly@example.com"
 jsonpath "$.is_external" == false
 jsonpath "$.username" not exists
+# PR 23 — the user redeemed the welcome magic-link in Step 5b, so
+# email_verified_at is stamped (the click IS the proof of inbox
+# control, regardless of whether the redemption went through the
+# direct or cross-browser-confirm path).
+jsonpath "$.email_verified_at" exists
 [Captures]
 pr18_user_id: jsonpath "$.id"
 

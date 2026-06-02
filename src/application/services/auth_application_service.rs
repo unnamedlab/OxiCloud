@@ -794,6 +794,11 @@ impl AuthApplicationService {
             lc.dispatch_login(&user).await;
         }
         user.register_login();
+        // PR 23: clicking the magic-link IS proof of email control —
+        // stamp the verification (idempotent, preserves the first
+        // timestamp). Applies to both invitation and login-via-email
+        // tokens.
+        user.mark_email_verified();
         self.user_storage.update_user(user.clone()).await?;
 
         let access_token = self.token_service.generate_access_token(&user)?;
@@ -827,11 +832,13 @@ impl AuthApplicationService {
             expires_in: self.token_service.refresh_token_expiry_secs(),
         };
 
-        Ok(MagicLinkRedeemResult::Allowed(Box::new(MagicLinkRedemption {
-            auth,
-            resource_kind: mlt.resource_kind(),
-            resource_id: mlt.resource_id(),
-        })))
+        Ok(MagicLinkRedeemResult::Allowed(Box::new(
+            MagicLinkRedemption {
+                auth,
+                resource_kind: mlt.resource_kind(),
+                resource_id: mlt.resource_id(),
+            },
+        )))
     }
 
     /// Verifies username/password credentials without creating a session.
@@ -1887,6 +1894,12 @@ impl AuthApplicationService {
                 }
                 existing_user.register_login();
                 existing_user.set_image(claims.picture.clone());
+                // PR 23: retroactive email verification for OIDC users
+                // who predate the column. The OIDC callback already
+                // enforced `claims.email_verified == true` upstream, so
+                // any user reaching this branch has a verified email
+                // by the IdP's word; stamping is safe and idempotent.
+                existing_user.mark_email_verified();
                 self.user_storage.update_user(existing_user.clone()).await?;
                 existing_user
             }
@@ -1983,6 +1996,11 @@ impl AuthApplicationService {
                 new_user.set_image(claims.picture.clone());
                 new_user.set_given_name(claims.given_name.clone());
                 new_user.set_family_name(claims.family_name.clone());
+                // PR 23: the OIDC callback rejected any caller upstream
+                // whose `email_verified` claim wasn't true, so users
+                // reaching this branch have an IdP-vetted email. Stamp
+                // the verification at JIT-create time.
+                new_user.mark_email_verified();
 
                 let created_user = self.user_storage.create_user(new_user).await?;
 

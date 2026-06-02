@@ -61,6 +61,17 @@ pub struct User {
     /// standard claim `family_name` at JIT provisioning, or via the
     /// profile-edit endpoint. External users start with `None`.
     family_name: Option<String>,
+    /// When the user demonstrated control of their email address (PR 23).
+    /// `None` = unverified. `Some(ts)` = timestamp of the first proof,
+    /// preserved across subsequent verifications.
+    ///
+    /// Set on successful magic-link redemption (invitation OR
+    /// login-via-email — clicking the link proves the inbox is theirs)
+    /// or on OIDC JIT with `email_verified=true` claim. Classic password
+    /// signups stay `None` until the user goes through a magic-link
+    /// flow. PR 23 ships the signal only — future policy PRs gate
+    /// features (uploads, shares, etc.) on this column.
+    email_verified_at: Option<DateTime<Utc>>,
 }
 
 impl User {
@@ -146,6 +157,10 @@ impl User {
             is_external,
             given_name: None,
             family_name: None,
+            // PR 23: unverified at creation. Stamped on the first
+            // magic-link redemption or OIDC JIT (where the IdP has
+            // already confirmed the email).
+            email_verified_at: None,
         })
     }
 
@@ -187,6 +202,7 @@ impl User {
             is_external: false,
             given_name: None,
             family_name: None,
+            email_verified_at: None,
         }
     }
 
@@ -209,6 +225,7 @@ impl User {
         is_external: bool,
         given_name: Option<String>,
         family_name: Option<String>,
+        email_verified_at: Option<DateTime<Utc>>,
     ) -> Self {
         Self {
             id,
@@ -228,6 +245,7 @@ impl User {
             is_external,
             given_name,
             family_name,
+            email_verified_at,
         }
     }
 
@@ -329,6 +347,32 @@ impl User {
 
     pub fn family_name(&self) -> Option<&str> {
         self.family_name.as_deref()
+    }
+
+    /// When the user first demonstrated control of their email (PR 23).
+    /// `None` = unverified. See `mark_email_verified` for the trigger
+    /// points (magic-link redemption, OIDC JIT with verified claim).
+    pub fn email_verified_at(&self) -> Option<DateTime<Utc>> {
+        self.email_verified_at
+    }
+
+    /// `true` iff the user has demonstrated control of their email.
+    /// Convenience wrapper over `email_verified_at().is_some()`.
+    pub fn is_email_verified(&self) -> bool {
+        self.email_verified_at.is_some()
+    }
+
+    /// Stamp the first proof-of-email-control timestamp. **Idempotent**:
+    /// if `email_verified_at` is already `Some`, this is a no-op so
+    /// re-verifications preserve the original time. Call from the
+    /// magic-link redemption path and from OIDC JIT when the IdP
+    /// confirms the email.
+    pub fn mark_email_verified(&mut self) {
+        if self.email_verified_at.is_none() {
+            let now = Utc::now();
+            self.email_verified_at = Some(now);
+            self.updated_at = now;
+        }
     }
 
     pub fn set_image(&mut self, image: Option<String>) {
