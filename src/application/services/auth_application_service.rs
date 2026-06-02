@@ -5,8 +5,8 @@ use crate::application::ports::auth_ports::{
     OidcIdClaims, OidcServicePort, PasswordHasherPort, SessionStoragePort, TokenServicePort,
     UserStoragePort,
 };
-use crate::application::ports::folder_ports::FolderUseCase;
-use crate::application::services::folder_service::FolderService;
+use crate::application::ports::user_lifecycle::{DeletionMode, LogoutReason};
+use crate::application::services::user_lifecycle_service::UserLifecycleService;
 use crate::common::config::OidcConfig;
 use crate::common::errors::{DomainError, ErrorKind};
 use crate::domain::entities::session::Session;
@@ -71,7 +71,12 @@ pub struct AuthApplicationService {
     session_storage: Arc<SessionPgRepository>,
     password_hasher: Arc<Argon2PasswordHasher>,
     token_service: Arc<JwtTokenService>,
-    folder_service: Option<Arc<FolderService>>,
+    /// Dispatcher for user-lifecycle events. `None` only in tests that don't
+    /// exercise the lifecycle path; production DI always wires this.
+    /// HomeFolderLifecycleHook (registered on this dispatcher) owns the
+    /// per-user folder provisioning that AuthApplicationService used to do
+    /// inline pre-PR 3.
+    user_lifecycle: Option<Arc<UserLifecycleService>>,
     /// Path to the storage directory, used for disk-space–aware quota calculation
     storage_path: PathBuf,
     oidc: RwLock<OidcState>,
@@ -96,7 +101,7 @@ impl AuthApplicationService {
             session_storage,
             password_hasher,
             token_service,
-            folder_service: None,
+            user_lifecycle: None,
             storage_path,
             oidc: RwLock::new(OidcState {
                 service: None,
@@ -159,9 +164,11 @@ impl AuthApplicationService {
         }
     }
 
-    /// Configures the folder service, needed to create personal folders
-    pub fn with_folder_service(mut self, folder_service: Arc<FolderService>) -> Self {
-        self.folder_service = Some(folder_service);
+    /// Configures the user-lifecycle dispatcher. Wired by the DI factory
+    /// after core services are up. PR 1: only AuditLifecycleHook is
+    /// registered, so calls without this configured silently no-op.
+    pub fn with_user_lifecycle(mut self, lifecycle: Arc<UserLifecycleService>) -> Self {
+        self.user_lifecycle = Some(lifecycle);
         self
     }
 
@@ -279,9 +286,12 @@ impl AuthApplicationService {
         // Save user
         let created_user = self.user_storage.create_user(user).await?;
 
-        // Create personal folder for the user
-        self.create_personal_folder(&dto.username, created_user.id())
-            .await;
+        // Lifecycle: HomeFolderLifecycleHook handles personal-folder
+        // creation (was inlined here pre-PR 3); audit log + future
+        // provisioning steps land here too.
+        if let Some(lc) = &self.user_lifecycle {
+            lc.dispatch_created(&created_user).await;
+        }
 
         tracing::info!("User registered: {}", created_user.id());
         Ok(UserDto::from(created_user))
@@ -356,9 +366,13 @@ impl AuthApplicationService {
 
         let created_user = self.user_storage.create_user(user).await?;
 
-        // Create personal folder for the admin
-        self.create_personal_folder(&username, created_user.id())
-            .await;
+        // Lifecycle: notify hooks. PR 3 moves home-folder creation into
+        // HomeFolderLifecycleHook fired here.
+        // Lifecycle: HomeFolderLifecycleHook provisions the admin's
+        // home folder. Audit logs the creation event.
+        if let Some(lc) = &self.user_lifecycle {
+            lc.dispatch_created(&created_user).await;
+        }
 
         tracing::info!(
             "Initial admin created via setup: {} ({})",
@@ -399,6 +413,13 @@ impl AuthApplicationService {
                 "Auth",
                 "Invalid credentials",
             ));
+        }
+
+        // Lifecycle: dispatch login BEFORE register_login() so hooks
+        // observing `last_login_at().is_none()` see "first ever login"
+        // correctly. See tip #1 in user_lifecycle.rs.
+        if let Some(lc) = &self.user_lifecycle {
+            lc.dispatch_login(&user).await;
         }
 
         // Update last login
@@ -496,6 +517,13 @@ impl AuthApplicationService {
             self.session_storage
                 .revoke_session_family(session.family_id())
                 .await?;
+            // Lifecycle: TokenReused logout — fired once per logical
+            // revoke-family call. PR 4 may refine to per-session firing.
+            if let Some(lc) = &self.user_lifecycle
+                && let Ok(user) = self.user_storage.get_user_by_id(session.user_id()).await
+            {
+                lc.dispatch_logout(user, LogoutReason::TokenReused);
+            }
             return Err(DomainError::new(
                 ErrorKind::AccessDenied,
                 "Auth",
@@ -576,6 +604,15 @@ impl AuthApplicationService {
         // Revoke session
         self.session_storage.revoke_session(session.id()).await?;
 
+        // Lifecycle: notify hooks. One extra DB roundtrip per logout
+        // (user load) is acceptable — logout is rare. Failure to load
+        // the user is non-fatal: we already revoked the session.
+        if let Some(lc) = &self.user_lifecycle
+            && let Ok(user) = self.user_storage.get_user_by_id(user_id).await
+        {
+            lc.dispatch_logout(user, LogoutReason::UserInitiated);
+        }
+
         Ok(())
     }
 
@@ -637,12 +674,18 @@ impl AuthApplicationService {
         user.update_password_hash(new_hash);
 
         // Save updated user
-        self.user_storage.update_user(user).await?;
+        self.user_storage.update_user(user.clone()).await?;
 
         // Optional: revoke all sessions to force re-login with new password
         self.session_storage
             .revoke_all_user_sessions(user_id)
             .await?;
+
+        // Lifecycle: PasswordChanged logout — fired once per logical
+        // revoke-all call. PR 4 may refine to per-session firing.
+        if let Some(lc) = &self.user_lifecycle {
+            lc.dispatch_logout(user, LogoutReason::PasswordChanged);
+        }
 
         Ok(())
     }
@@ -802,21 +845,60 @@ impl AuthApplicationService {
             _ => UserRole::User,
         };
 
-        // Determine quota, capped to available disk space
-        let quota = dto.quota_bytes.unwrap_or_else(|| self.capped_quota(&role));
+        let is_external = dto.is_external.unwrap_or(false);
 
-        // Hash password
+        // Forbid external + admin combo. The DB `users_external_not_admin`
+        // CHECK constraint would catch this too, but a 400 with an
+        // explanatory message is friendlier than a generic 500 from a
+        // constraint violation. See the CHECK definition in
+        // migrations/20260612000002_auth_users_is_external.sql for the
+        // rationale.
+        if is_external && matches!(role, UserRole::Admin) {
+            return Err(DomainError::new(
+                ErrorKind::InvalidInput,
+                "User",
+                "External users cannot be admins. To promote an external user to admin, \
+                 first convert them to internal (set is_external = false), then update \
+                 the role separately."
+                    .to_string(),
+            ));
+        }
+
+        // External users never own storage. The DB `users_external_no_storage`
+        // CHECK constraint enforces this; setting quota=0 here keeps the
+        // domain consistent and matches `User::new_external`.
+        let quota = if is_external {
+            0
+        } else {
+            dto.quota_bytes.unwrap_or_else(|| self.capped_quota(&role))
+        };
+
+        // Hash password (kept for both internal and external users — for
+        // external users it's currently unused since they authenticate via
+        // magic-link / OIDC, but the DB column is NOT NULL).
         let password_hash = self.password_hasher.hash_password(&dto.password).await?;
 
-        // Create domain entity
-        let user =
-            User::new(dto.username.clone(), email, password_hash, role, quota).map_err(|e| {
-                DomainError::new(
-                    ErrorKind::InvalidInput,
-                    "User",
-                    format!("Error creating user: {}", e),
-                )
-            })?;
+        // Create domain entity. External path uses `new_external` so the
+        // is_external flag is set + the EXTERNAL placeholder password
+        // marker is applied for clarity in DB inspection. `new_external`
+        // forces role=User (the admin+external combo was rejected above).
+        let user = if is_external {
+            User::new_external(dto.username.clone(), email).map(|mut u| {
+                // The hashed password from the request is unused for auth
+                // but is persisted so audit-trail integrity is preserved.
+                u.update_password_hash(password_hash);
+                u
+            })
+        } else {
+            User::new(dto.username.clone(), email, password_hash, role, quota)
+        }
+        .map_err(|e| {
+            DomainError::new(
+                ErrorKind::InvalidInput,
+                "User",
+                format!("Error creating user: {}", e),
+            )
+        })?;
 
         // Persist
         let created = self.user_storage.create_user(user).await?;
@@ -828,11 +910,19 @@ impl AuthApplicationService {
                 .await?;
         }
 
-        // Create personal folder
-        self.create_personal_folder(&dto.username, created.id())
-            .await;
+        // Lifecycle: HomeFolderLifecycleHook handles the home-folder
+        // provisioning (idempotent + short-circuits on is_external).
+        // Audit logs the creation event.
+        if let Some(lc) = &self.user_lifecycle {
+            lc.dispatch_created(&created).await;
+        }
 
-        tracing::info!("Admin created user: {} ({})", dto.username, created.id());
+        tracing::info!(
+            "Admin created user: {} ({}, is_external={})",
+            dto.username,
+            created.id(),
+            created.is_external()
+        );
         Ok(UserDto::from(created))
     }
 
@@ -878,12 +968,47 @@ impl AuthApplicationService {
         Ok(UserDto::from(user))
     }
 
-    /// Delete a user by ID (admin only)
+    /// Delete a user by ID (admin only).
+    ///
+    /// Runs the whole flow in a single transaction so the lifecycle
+    /// hooks (`SessionRevocationLifecycleHook` revoking sessions with
+    /// audit, `AuthzCacheLifecycleHook` invalidating the Moka cache,
+    /// `HomeFolderLifecycleHook` for future trash policy, …) can do
+    /// their work atomically with the user DELETE. If any hook returns
+    /// `Err`, the transaction rolls back and the user remains intact.
     pub async fn delete_user_admin(&self, user_id: Uuid) -> Result<(), DomainError> {
-        // Prevent deleting yourself
         let user = self.user_storage.get_user_by_id(user_id).await?;
         tracing::info!("Admin deleting user: {} ({})", user.username(), user_id);
-        self.user_storage.delete_user(user_id).await
+
+        let mut tx = self
+            .user_storage
+            .pool()
+            .begin()
+            .await
+            .map_err(|e| DomainError::internal_error("Auth", format!("begin tx: {}", e)))?;
+
+        // Hooks run inside the tx, BEFORE the user DELETE. They see the
+        // row still present and can write cleanup queries against the
+        // same tx (e.g. session revocation with per-session audit).
+        if let Some(lc) = &self.user_lifecycle {
+            lc.dispatch_deleted(&user, DeletionMode::AdminDelete, &mut tx)
+                .await?;
+        }
+
+        // Now the DELETE — FK CASCADE handles the downstream cleanup
+        // (sessions, folders, files, …) for anything the hooks didn't
+        // explicitly remove.
+        sqlx::query("DELETE FROM auth.users WHERE id = $1")
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| DomainError::internal_error("Auth", format!("delete user: {}", e)))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| DomainError::internal_error("Auth", format!("commit: {}", e)))?;
+
+        Ok(())
     }
 
     /// Activate or deactivate a user (admin only)
@@ -1175,7 +1300,12 @@ impl AuthApplicationService {
             .await
         {
             Ok(mut existing_user) => {
-                // User exists — update last login and sync avatar from IdP
+                // User exists — dispatch login BEFORE register_login() so
+                // hooks observe `last_login_at = None` on the very first
+                // login (see tip #1 in the trait docstring).
+                if let Some(lc) = &self.user_lifecycle {
+                    lc.dispatch_login(&existing_user).await;
+                }
                 existing_user.register_login();
                 existing_user.set_image(claims.picture.clone());
                 self.user_storage.update_user(existing_user.clone()).await?;
@@ -1273,9 +1403,14 @@ impl AuthApplicationService {
 
                 let created_user = self.user_storage.create_user(new_user).await?;
 
-                // Create personal folder
-                self.create_personal_folder(&username, created_user.id())
-                    .await;
+                // Lifecycle: created (audit + home-folder provisioning) +
+                // login (no register_login() for a fresh OIDC user means
+                // `last_login_at` is naturally None → first-login detection
+                // works). HomeFolderLifecycleHook creates the home folder.
+                if let Some(lc) = &self.user_lifecycle {
+                    lc.dispatch_created(&created_user).await;
+                    lc.dispatch_login(&created_user).await;
+                }
 
                 tracing::info!(
                     "OIDC user provisioned: {} (provider: {}, sub: {})",
@@ -1371,32 +1506,10 @@ impl AuthApplicationService {
         UserRole::User
     }
 
-    /// Helper to create a personal folder for a new user
-    async fn create_personal_folder(&self, username: &str, user_id: Uuid) {
-        if let Some(folder_service) = &self.folder_service {
-            let folder_name = format!("My Folder - {}", username);
-            match folder_service
-                .create_home_folder(user_id, folder_name.clone())
-                .await
-            {
-                Ok(folder) => {
-                    tracing::info!(
-                        "Personal folder created for user {}: {} (ID: {})",
-                        user_id,
-                        folder.name,
-                        folder.id
-                    );
-                }
-                Err(e) => {
-                    tracing::error!(
-                        "Failed to create personal folder for user {}: {}",
-                        user_id,
-                        e
-                    );
-                }
-            }
-        }
-    }
+    // `create_personal_folder` was removed in PR 3 of the
+    // UserLifecycleHook migration — home-folder provisioning is now
+    // owned by `HomeFolderLifecycleHook` in folder_service.rs and runs
+    // via `dispatch_created` / `dispatch_login`.
 }
 
 /// URL-safe base64 encoding without padding (RFC 4648 §5)

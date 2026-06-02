@@ -27,6 +27,14 @@ impl UserPgRepository {
         Self { pool }
     }
 
+    /// Borrowed access to the connection pool. Exposed so callers can
+    /// open transactions that span this repo and other repos / hooks
+    /// (e.g. `AuthApplicationService::delete_user_admin` opening a tx
+    /// that wraps the lifecycle dispatcher + the DELETE).
+    pub fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+
     // Helper method to map SQL errors to domain errors
     pub fn map_sqlx_error(err: sqlx::Error) -> UserRepositoryError {
         match err {
@@ -84,13 +92,13 @@ impl UserRepository for UserPgRepository {
                 let _result = sqlx::query(
                     r#"
                         INSERT INTO auth.users (
-                            id, username, email, password_hash, role, 
-                            storage_quota_bytes, storage_used_bytes, 
+                            id, username, email, password_hash, role,
+                            storage_quota_bytes, storage_used_bytes,
                             created_at, updated_at, last_login_at, active,
-                            oidc_provider, oidc_subject
+                            oidc_provider, oidc_subject, is_external
                         ) VALUES (
                             $1, $2, $3, $4, $5::auth.userrole, $6, $7, $8, $9, $10, $11,
-                            $12, $13
+                            $12, $13, $14
                         )
                         RETURNING *
                         "#,
@@ -108,6 +116,7 @@ impl UserRepository for UserPgRepository {
                 .bind(user_clone.is_active())
                 .bind(user_clone.oidc_provider())
                 .bind(user_clone.oidc_subject())
+                .bind(user_clone.is_external())
                 .execute(&mut **tx)
                 .await
                 .map_err(Self::map_sqlx_error)?;
@@ -131,7 +140,7 @@ impl UserRepository for UserPgRepository {
                 id, username, email, password_hash, role::text as role_text,
                 storage_quota_bytes, storage_used_bytes,
                 created_at, updated_at, last_login_at, active,
-                oidc_provider, oidc_subject, image
+                oidc_provider, oidc_subject, image, is_external
             FROM auth.users
             WHERE id = $1
             "#,
@@ -163,6 +172,7 @@ impl UserRepository for UserPgRepository {
             row.get("oidc_provider"),
             row.get("oidc_subject"),
             row.get("image"),
+            row.get("is_external"),
         ))
     }
 
@@ -174,7 +184,7 @@ impl UserRepository for UserPgRepository {
                 id, username, email, password_hash, role::text as role_text,
                 storage_quota_bytes, storage_used_bytes,
                 created_at, updated_at, last_login_at, active,
-                oidc_provider, oidc_subject, image
+                oidc_provider, oidc_subject, image, is_external
             FROM auth.users
             WHERE username = $1
             "#,
@@ -206,6 +216,7 @@ impl UserRepository for UserPgRepository {
             row.get("oidc_provider"),
             row.get("oidc_subject"),
             row.get("image"),
+            row.get("is_external"),
         ))
     }
 
@@ -217,7 +228,7 @@ impl UserRepository for UserPgRepository {
                 id, username, email, password_hash, role::text as role_text,
                 storage_quota_bytes, storage_used_bytes,
                 created_at, updated_at, last_login_at, active,
-                oidc_provider, oidc_subject, image
+                oidc_provider, oidc_subject, image, is_external
             FROM auth.users
             WHERE email = $1
             "#,
@@ -249,6 +260,7 @@ impl UserRepository for UserPgRepository {
             row.get("oidc_provider"),
             row.get("oidc_subject"),
             row.get("image"),
+            row.get("is_external"),
         ))
     }
 
@@ -354,7 +366,7 @@ impl UserRepository for UserPgRepository {
                 id, username, email, password_hash, role::text as role_text,
                 storage_quota_bytes, storage_used_bytes,
                 created_at, updated_at, last_login_at, active,
-                oidc_provider, oidc_subject, image
+                oidc_provider, oidc_subject, image, is_external
             FROM auth.users
             ORDER BY created_at DESC
             LIMIT $1 OFFSET $2
@@ -391,6 +403,7 @@ impl UserRepository for UserPgRepository {
                     row.get("oidc_provider"),
                     row.get("oidc_subject"),
                     row.get("image"),
+                    row.get("is_external"),
                 )
             })
             .collect();
@@ -406,7 +419,7 @@ impl UserRepository for UserPgRepository {
                 id, username, email, password_hash, role::text as role_text,
                 storage_quota_bytes, storage_used_bytes,
                 created_at, updated_at, last_login_at, active,
-                oidc_provider, oidc_subject, image
+                oidc_provider, oidc_subject, image, is_external
             FROM auth.users
             WHERE username ILIKE $1 OR email ILIKE $1
             ORDER BY username
@@ -443,6 +456,7 @@ impl UserRepository for UserPgRepository {
                     row.get("oidc_provider"),
                     row.get("oidc_subject"),
                     row.get("image"),
+                    row.get("is_external"),
                 )
             })
             .collect();
@@ -529,7 +543,7 @@ impl UserRepository for UserPgRepository {
                 id, username, email, password_hash, role::text as role_text,
                 storage_quota_bytes, storage_used_bytes,
                 created_at, updated_at, last_login_at, active,
-                oidc_provider, oidc_subject, image
+                oidc_provider, oidc_subject, image, is_external
             FROM auth.users
             WHERE role::text = $1
             ORDER BY created_at DESC
@@ -565,6 +579,7 @@ impl UserRepository for UserPgRepository {
                     row.get("oidc_provider"),
                     row.get("oidc_subject"),
                     row.get("image"),
+                    row.get("is_external"),
                 )
             })
             .collect();
@@ -600,7 +615,7 @@ impl UserRepository for UserPgRepository {
                 id, username, email, password_hash, role::text as role_text,
                 storage_quota_bytes, storage_used_bytes,
                 created_at, updated_at, last_login_at, active,
-                oidc_provider, oidc_subject, image
+                oidc_provider, oidc_subject, image, is_external
             FROM auth.users
             WHERE oidc_provider = $1 AND oidc_subject = $2
             "#,
@@ -632,6 +647,7 @@ impl UserRepository for UserPgRepository {
             row.get("oidc_provider"),
             row.get("oidc_subject"),
             row.get("image"),
+            row.get("is_external"),
         ))
     }
 

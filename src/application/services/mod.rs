@@ -6,6 +6,7 @@ pub mod blob_lifecycle_service;
 pub mod calendar_service;
 pub mod contact_service;
 pub mod device_auth_service;
+pub mod external_identity_service;
 pub mod favorites_service;
 pub mod file_lifecycle_service;
 pub mod file_management_service;
@@ -25,6 +26,7 @@ pub mod storage_settings_service;
 pub mod storage_usage_service;
 pub mod subject_group_service;
 pub mod trash_service;
+pub mod user_lifecycle_service;
 pub mod wopi_lock_service;
 pub mod wopi_token_service;
 

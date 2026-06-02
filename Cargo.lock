@@ -3652,6 +3652,7 @@ dependencies = [
  "argon2",
  "async-compression",
  "async-stream",
+ "async-trait",
  "async_zip",
  "aws-config",
  "aws-sdk-s3",

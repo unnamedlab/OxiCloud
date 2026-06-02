@@ -691,12 +691,71 @@ impl AppServiceFactory {
             storage_usage_service =
                 Some(self.create_storage_usage_service(&repos, &pool, &maintenance_pool));
 
-            // Auth services
+            // User-lifecycle dispatcher. Hook order is registration order;
+            // document dependencies inline if/when any arise. Today:
+            //   1. AuditLifecycleHook             — fires first so the
+            //                                       audit event is recorded
+            //                                       even if a later hook
+            //                                       errors out.
+            //   2. HomeFolderLifecycleHook        — provisions the user's
+            //                                       home folder on
+            //                                       created/login (no-op
+            //                                       for external users).
+            //   3. AuthzCacheLifecycleHook        — invalidates the
+            //                                       Moka group-expansion
+            //                                       cache on logout/delete
+            //                                       so a re-login sees fresh
+            //                                       membership immediately.
+            //   4. SessionRevocationLifecycleHook — explicit per-user
+            //                                       session revocation on
+            //                                       delete (with audit) —
+            //                                       replaces the silent FK
+            //                                       CASCADE.
+            //   5. ExternalIdentityLifecycleHook  — STUB. No-op for every
+            //                                       event today; the
+            //                                       magic-link / OIDC-only /
+            //                                       OCM PR will fill it in
+            //                                       to populate
+            //                                       `auth.user_external_identity`.
+            //                                       Last in the chain so it
+            //                                       observes the latest user
+            //                                       state before the chain
+            //                                       commits.
+            let session_repo_for_hook = Arc::new(SessionPgRepository::new(pool.clone()));
+            let user_lifecycle = Arc::new(
+                crate::application::services::user_lifecycle_service::UserLifecycleService::new()
+                    .with_hook(Arc::new(
+                        crate::application::services::user_lifecycle_service::AuditLifecycleHook,
+                    ))
+                    .with_hook(Arc::new(
+                        crate::application::services::folder_service::HomeFolderLifecycleHook::new(
+                            apps.folder_service_concrete.clone(),
+                        ),
+                    ))
+                    .with_hook(Arc::new(
+                        crate::infrastructure::services::pg_acl_engine::AuthzCacheLifecycleHook::new(
+                            authorization.clone(),
+                        ),
+                    ))
+                    .with_hook(Arc::new(
+                        crate::application::services::user_lifecycle_service::SessionRevocationLifecycleHook::new(
+                            session_repo_for_hook,
+                        ),
+                    ))
+                    .with_hook(Arc::new(
+                        crate::application::services::external_identity_service::ExternalIdentityLifecycleHook,
+                    )),
+            );
+
+            // Auth services. Folder service no longer threaded here —
+            // PR 3 moved home-folder provisioning into
+            // HomeFolderLifecycleHook, which already holds an Arc to the
+            // folder service via the user_lifecycle dispatcher.
             if self.config.features.enable_auth {
                 let services = crate::infrastructure::auth_factory::create_auth_services(
                     &self.config,
                     pool.clone(),
-                    Some(apps.folder_service_concrete.clone()),
+                    user_lifecycle.clone(),
                 )
                 .await
                 .map_err(|e| {

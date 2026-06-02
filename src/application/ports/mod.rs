@@ -21,4 +21,5 @@ pub mod storage_ports;
 pub mod thumbnail_ports;
 pub mod transcode_ports;
 pub mod trash_ports;
+pub mod user_lifecycle;
 pub mod zip_ports;

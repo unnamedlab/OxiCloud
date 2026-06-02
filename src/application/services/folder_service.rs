@@ -315,7 +315,12 @@ impl FolderUseCase for FolderService {
     }
 
     /// Lists folders scoped to a specific owner.
-    /// Self-healing: if listing root folders and none exist, creates a home folder.
+    ///
+    /// **Note (post PR 3):** the self-heal block that auto-created a
+    /// home folder when listing returned empty has been removed.
+    /// `HomeFolderLifecycleHook` (registered on `UserLifecycleService`)
+    /// now provisions the folder on `on_user_created` / `on_user_login`,
+    /// idempotently, so the listing path no longer needs to self-heal.
     async fn list_folders_with_perms(
         &self,
         parent_id: Option<&str>,
@@ -331,62 +336,23 @@ impl FolderUseCase for FolderService {
                 )
                 .await?;
             return self.list_folders(parent_id).await;
-        } else {
-            // No parent defined grab user's homes
-            let folders = self
-                .folder_storage
-                .list_folders_by_owner(parent_id, caller_id)
-                .await
-                .map_err(|e| {
-                    DomainError::internal_error(
-                        "FolderStorage",
-                        format!(
-                            "Failed to list folders for owner '{}' in parent {:?}: {}",
-                            caller_id, parent_id, e
-                        ),
-                    )
-                })?;
-
-            if folders.is_empty() {
-                // Self-healing: if listing root folders and none exist, create a home folder
-                // This ensures the frontend always gets a valid userHomeFolderId
-                tracing::info!(
-                    "No root folders found for user {}, creating home folder automatically",
-                    caller_id
-                );
-                let owner_id_short = {
-                    let s = caller_id.to_string();
-                    s[..8.min(s.len())].to_string()
-                };
-                // TODO: what about i18n ?
-                let folder_name = format!("My Folder - {}", owner_id_short);
-                match self
-                    .folder_storage
-                    .create_home_folder(caller_id, folder_name.clone())
-                    .await
-                {
-                    Ok(home_folder) => {
-                        tracing::info!(
-                            "Created home folder '{}' for user {}",
-                            folder_name,
-                            caller_id
-                        );
-                        return Ok(vec![FolderDto::from(home_folder)]);
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            "Failed to create home folder for user {}: {}",
-                            caller_id,
-                            e
-                        );
-                        // Return empty list rather than failing - user might not have storage quota, etc.
-                    }
-                }
-            }
-            Ok(folders.into_iter().map(FolderDto::from).collect())
         }
+        // No parent → list the user's root folders.
+        let folders = self
+            .folder_storage
+            .list_folders_by_owner(parent_id, caller_id)
+            .await
+            .map_err(|e| {
+                DomainError::internal_error(
+                    "FolderStorage",
+                    format!(
+                        "Failed to list folders for owner '{}' in parent {:?}: {}",
+                        caller_id, parent_id, e
+                    ),
+                )
+            })?;
+        Ok(folders.into_iter().map(FolderDto::from).collect())
     }
-    // TODO: move self healing in other part (on account creation on or login ?)
 
     /// Lists folders with pagination
     async fn list_folders_paginated(
@@ -637,6 +603,59 @@ impl FolderService {
 
         Ok((rows, next_cursor))
     }
+
+    /// Idempotently provision a home folder for a user.
+    ///
+    /// Returns `Ok(true)` if a folder was newly created, `Ok(false)` if the
+    /// user already had at least one root folder.
+    ///
+    /// **System-level operation** — bypasses authz because this runs on
+    /// the user's own behalf (during creation or login provisioning) at a
+    /// point where the caller may be the engine itself, not an HTTP user.
+    /// Callers must be inside trusted code paths (lifecycle hooks).
+    ///
+    /// Used by [`HomeFolderLifecycleHook`] on `on_user_created` and
+    /// `on_user_login`. Replaces the old self-heal at the listing path
+    /// and the four eager `create_personal_folder` calls in
+    /// `AuthApplicationService` (removed in the same PR).
+    pub async fn ensure_home_folder(
+        &self,
+        user_id: Uuid,
+        username: &str,
+    ) -> Result<bool, DomainError> {
+        let existing = self
+            .folder_storage
+            .list_folders_by_owner(None, user_id)
+            .await
+            .map_err(|e| {
+                DomainError::internal_error(
+                    "FolderStorage",
+                    format!("ensure_home_folder: list root folders: {}", e),
+                )
+            })?;
+        if !existing.is_empty() {
+            return Ok(false);
+        }
+
+        let folder_name = format!("My Folder - {}", username);
+        self.folder_storage
+            .create_home_folder(user_id, folder_name.clone())
+            .await
+            .map_err(|e| {
+                DomainError::internal_error(
+                    "FolderStorage",
+                    format!("ensure_home_folder: create: {}", e),
+                )
+            })?;
+        tracing::info!(
+            target: "user_lifecycle",
+            hook = "home_folder",
+            user_id = %user_id,
+            folder_name = %folder_name,
+            "Home folder provisioned"
+        );
+        Ok(true)
+    }
 }
 
 /// Build the next-page cursor from the last row of the current page.
@@ -688,5 +707,102 @@ fn build_folder_resource_cursor(
             sort_ts: None,
             reverse,
         },
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HomeFolderLifecycleHook
+//
+// Owns home-folder provisioning policy. Replaces:
+//   - the 4 eager `create_personal_folder` calls in AuthApplicationService
+//     (register / setup_create_admin / admin_create_user / OIDC JIT)
+//   - the self-heal at `list_folders_with_perms` when no root folders exist
+//
+// Lives in this file (not under a centralised `lifecycle/` directory)
+// because the folder service owns home-folder policy — see the
+// "owner-located convention" note in
+// `docs/architecture/user-lifecycle.md`.
+// ─────────────────────────────────────────────────────────────────────────────
+
+use async_trait::async_trait;
+
+use crate::application::ports::user_lifecycle::{DeletionMode, LogoutReason, UserLifecycleHook};
+use crate::domain::entities::user::User;
+
+/// Lifecycle hook: provisions and (in PR 4) deprovisions a user's home folder.
+pub struct HomeFolderLifecycleHook {
+    folder_service: Arc<FolderService>,
+}
+
+impl HomeFolderLifecycleHook {
+    pub fn new(folder_service: Arc<FolderService>) -> Self {
+        Self { folder_service }
+    }
+
+    /// Idempotent provisioning shared by `on_user_created` and
+    /// `on_user_login`. External users are skipped per tip #2 in the
+    /// trait docstring.
+    async fn provision_if_needed(&self, user: &User) -> Result<(), DomainError> {
+        if user.is_external() {
+            return Ok(());
+        }
+        // `ensure_home_folder` handles the "does the user already have a
+        // root folder?" check internally and is a no-op if so.
+        self.folder_service
+            .ensure_home_folder(user.id(), user.username())
+            .await
+            .map(|_created| ())
+    }
+}
+
+#[async_trait]
+impl UserLifecycleHook for HomeFolderLifecycleHook {
+    fn name(&self) -> &'static str {
+        "home_folder"
+    }
+
+    async fn on_user_created(&self, user: &User) -> Result<(), DomainError> {
+        self.provision_if_needed(user).await
+    }
+
+    /// Login is the safety net — if `on_user_created` failed at any
+    /// earlier point (or the user was created in a flow that pre-dated
+    /// this hook), provisioning happens here on next login.
+    async fn on_user_login(&self, user: &User) -> Result<(), DomainError> {
+        self.provision_if_needed(user).await
+    }
+
+    async fn on_user_logout(&self, _user: &User, _reason: LogoutReason) -> Result<(), DomainError> {
+        // Folders don't react to logout. Explicit no-op per the
+        // "no defaults" convention.
+        Ok(())
+    }
+
+    async fn on_user_deleted(
+        &self,
+        user: &User,
+        mode: DeletionMode,
+        _tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ) -> Result<(), DomainError> {
+        // For both DeletionMode variants today the FK CASCADE on
+        // `storage.folders.user_id` (and downstream files/blobs)
+        // removes the home folder + contents when the user row goes.
+        // The hook emits a per-mode tracing event so audit can tell
+        // AdminDelete (currently recoverable only via DB-level rollback
+        // before commit) from GdprPurge (no sweeper exists yet — the
+        // variant is reserved for a future PR that adds retention).
+        //
+        // The `tx` is provided per the trait contract but unused here:
+        // emitting a tracing event doesn't require DB access. Future
+        // policy (trash with retention) would write to `storage.trash`
+        // inside this same tx.
+        tracing::info!(
+            target: "user_lifecycle",
+            hook = "home_folder",
+            user_id = %user.id(),
+            mode = ?mode,
+            "Home folder will be removed via FK CASCADE on user delete"
+        );
+        Ok(())
     }
 }

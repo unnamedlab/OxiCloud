@@ -114,6 +114,17 @@ impl PgAclEngine {
         }
     }
 
+    /// Drop the cached transitive-group expansion for one user, forcing
+    /// the next `expand_user(uid)` to walk the recursive CTE again.
+    ///
+    /// Called by [`AuthzCacheLifecycleHook`] on `on_user_logout` /
+    /// `on_user_deleted` so a re-login (or a re-created account with the
+    /// same id) doesn't observe stale memberships during the 30 s TTL
+    /// window. Cheap — moka's `invalidate` is a single concurrent-map op.
+    pub async fn invalidate_user_groups_cache(&self, user_id: Uuid) {
+        self.user_groups_cache.invalidate(&user_id).await;
+    }
+
     /// Expand a user subject into the set of subject UUIDs that should match
     /// in `access_grants`: the user's own UUID, every group the user is
     /// transitively a member of, and the implicit `INTERNAL_GROUP_ID`.
@@ -1588,5 +1599,74 @@ impl AuthorizationEngine for PgAclEngine {
         .map_err(|e| DomainError::internal_error("PgAcl", format!("revoke for subject: {e}")))?;
 
         Ok(result.rows_affected() as usize)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AuthzCacheLifecycleHook
+//
+// Owns invalidation of the `user_groups_cache` Moka entry when a user's
+// state changes in ways that affect transitive-group expansion (logout
+// — so a re-login with new group memberships doesn't observe a stale
+// expansion during the 30 s TTL window; delete — so a re-created
+// account with the same id doesn't inherit the old cached value).
+//
+// Lives in this file (not under a centralised `lifecycle/` directory)
+// because the authz engine owns its own cache invariants. See the
+// "owner-located convention" note in
+// `docs/architecture/user-lifecycle.md`.
+// ─────────────────────────────────────────────────────────────────────────────
+
+use async_trait::async_trait;
+
+use crate::application::ports::user_lifecycle::{DeletionMode, LogoutReason, UserLifecycleHook};
+use crate::domain::entities::user::User;
+
+/// Lifecycle hook: drops the `user_groups_cache` entry for one user on
+/// logout / deletion so the next authz check rebuilds it from current
+/// `subject_group_members` rows.
+pub struct AuthzCacheLifecycleHook {
+    engine: Arc<PgAclEngine>,
+}
+
+impl AuthzCacheLifecycleHook {
+    pub fn new(engine: Arc<PgAclEngine>) -> Self {
+        Self { engine }
+    }
+}
+
+#[async_trait]
+impl UserLifecycleHook for AuthzCacheLifecycleHook {
+    fn name(&self) -> &'static str {
+        "authz_cache"
+    }
+
+    async fn on_user_created(&self, _user: &User) -> Result<(), DomainError> {
+        // New user can't have a stale cache entry (no prior `expand_user`
+        // call has produced one). Explicit no-op per the trait convention.
+        Ok(())
+    }
+
+    async fn on_user_login(&self, _user: &User) -> Result<(), DomainError> {
+        // Login doesn't change group membership; the cache (if present)
+        // is still correct.
+        Ok(())
+    }
+
+    async fn on_user_logout(&self, user: &User, _reason: LogoutReason) -> Result<(), DomainError> {
+        self.engine.invalidate_user_groups_cache(user.id()).await;
+        Ok(())
+    }
+
+    async fn on_user_deleted(
+        &self,
+        user: &User,
+        _mode: DeletionMode,
+        _tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ) -> Result<(), DomainError> {
+        // No DB writes here — just memory invalidation. `_tx` is
+        // intentionally ignored.
+        self.engine.invalidate_user_groups_cache(user.id()).await;
+        Ok(())
     }
 }
