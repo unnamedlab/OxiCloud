@@ -62,7 +62,22 @@ function _nameFor(c) {
  */
 async function _ensureIndex() {
     if (_index !== null) return;
-    const contacts = await addressBook.listContacts(SYSTEM_BOOK_ID);
+
+    // System address book load. Tolerates ANY error (most relevantly the
+    // 403 external users receive on `/api/address-books/system/contacts`
+    // since PR 11.1's defense-in-depth lockout): treat as "empty book"
+    // and fall through to the per-user localStorage injection below so
+    // at least the logged-in user resolves correctly. Without this
+    // try/catch an external user's systemUsers cache stays unbuilt and
+    // every userVignette (including their own avatar in the user menu)
+    // falls back to the UUID-prefix placeholder.
+    /** @type {ContactItem[]} */
+    let contacts = [];
+    try {
+        contacts = await addressBook.listContacts(SYSTEM_BOOK_ID);
+    } catch {
+        // 403 / 5xx / network error — leave contacts empty.
+    }
     _index = new Map(contacts.map((c) => [c.id, _nameFor(c)]));
     _photoIndex = new Map(contacts.map((c) => [c.id, c.photo_url ?? null]));
     _emailIndex = new Map(

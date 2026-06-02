@@ -28,11 +28,15 @@
     justify-content: center;
     font-weight: 700;
     flex-shrink: 0;
-    /* Default size = --sm; overridden by size modifier below */
-    width: 24px;
-    height: 24px;
+    /* Diameter comes from `--avatar-size`, declared per size variant on
+       the wrapper so the origin badge (a wrapper sibling or an avatar
+       child) can size off the same value. Default fallback is `--sm`. */
+    width: var(--avatar-size, 24px);
+    height: var(--avatar-size, 24px);
     font-size: 10px;
-    /* Anchor for the bottom-right `__origin` badge. */
+    /* Anchor for `__origin--overlay` (the avatar-only-mode badge that
+       sits on the bottom-right corner of the picture). Harmless when
+       no overlay child is present. */
     position: relative;
 }
 
@@ -66,45 +70,60 @@
 
 /* ── Size variants ─────────────────────────────────────────────────────────── */
 
+/* `--avatar-size` is the single source of truth for the diameter. The
+   `__avatar` element reads it for width/height; the `__origin` badge
+   reads it (via the wrapper's inheritance scope) to scale itself to a
+   fixed proportion of the avatar regardless of variant. The avatar's
+   own `font-size` (used for initials) stays per-variant because the
+   initials-to-avatar ratio is a deliberate design choice, not a fixed
+   fraction. */
+
+.user-vignette--xs {
+    --avatar-size: 20px;
+}
 .user-vignette--xs .user-vignette__avatar {
-    width: 20px;
-    height: 20px;
     font-size: 9px;
 }
 
+.user-vignette--sm {
+    --avatar-size: 24px;
+}
 .user-vignette--sm .user-vignette__avatar {
-    width: 24px;
-    height: 24px;
     font-size: 10px;
 }
 
+.user-vignette--list {
+    --avatar-size: 36px;
+}
 .user-vignette--list .user-vignette__avatar {
-    width: 36px;
-    height: 36px;
     font-size: 13px;
 }
 
+.user-vignette--md {
+    --avatar-size: 32px;
+}
 .user-vignette--md .user-vignette__avatar {
-    width: 32px;
-    height: 32px;
     font-size: 12px;
 }
 
+.user-vignette--lg {
+    --avatar-size: 40px;
+}
 .user-vignette--lg .user-vignette__avatar {
-    width: 40px;
-    height: 40px;
     font-size: 15px;
 }
 
+.user-vignette--menu {
+    --avatar-size: 38px;
+}
 .user-vignette--menu .user-vignette__avatar {
-    width: 38px;
-    height: 38px;
     font-size: 14px;
 }
 
+.user-vignette--xl {
+    --avatar-size: 48px;
+}
 .user-vignette--xl .user-vignette__avatar {
-    width: 48px;
-    height: 48px;
     font-size: 17px;
 }
 
@@ -141,9 +160,13 @@
 /* ── Photo rendering ───────────────────────────────────────────────────────── */
 
 /* When a photo is available the JS replaces the initials text with an <img>.
-   The avatar <span> keeps its background color as a fallback while loading. */
+   The avatar <span> keeps its background color as a fallback while loading.
+   The `:not(.user-vignette__origin)` carve-out excludes the overlay badge
+   (avatar-only mode) which is also an `.oxi-icon` inside `.__avatar`
+   after SVG conversion — without the carve-out it would inherit the
+   100% / 100% sizing and fill the whole circle. */
 .user-vignette__avatar img,
-.user-vignette__avatar .oxi-icon {
+.user-vignette__avatar .oxi-icon:not(.user-vignette__origin) {
     width: 100%;
     height: 100%;
     object-fit: cover;
@@ -180,33 +203,47 @@
 }
 
 /* ── Origin badge (external-user marker) ───────────────────────────────────
- * Tiny FontAwesome icon overlaid on the bottom-right of the avatar circle.
- * Shown ONLY for external users — internal users render the bare avatar
+ * Inline-flex sibling rendered to the right of the avatar + name. Shown
+ * ONLY for external users — internal users render the bare vignette
  * (Ed's "external only" preference: quiet UI for the common case).
  *
- * The white background ring lifts the icon off coloured avatars so it
- * stays readable across the full palette.                                  */
+ * Earlier iterations placed this inside `.__avatar` as an absolute-
+ * positioned corner badge. The corner approach failed once the avatar
+ * showed a user photo — the `<img>` masked the badge out. Pulling it
+ * out to a sibling keeps it visible regardless of avatar content.    */
 
 .user-vignette__origin {
-    position: absolute;
-    /* Bottom-right corner, slightly tucked past the avatar's edge. */
-    right: -2px;
-    bottom: -2px;
-    /* Scale to ~40% of avatar diameter via em — the parent's font-size
-       changes per size variant, so the badge naturally tracks. */
-    font-size: 0.9em;
+    flex-shrink: 0;
     line-height: 1;
-    background: var(--color-bg-surface);
-    color: var(--color-text-secondary);
-    border-radius: 50%;
-    /* Halo ring so the icon visually detaches from coloured avatars. */
-    box-shadow: 0 0 0 1.5px var(--color-bg-surface);
-    /* Don't intercept hover events on the avatar itself. */
-    pointer-events: auto;
+    /* Default (sibling mode, with name): track the avatar's font-size
+       so the badge matches the row's text scale. The overlay mode
+       overrides this below with the explicit 30%-of-avatar-diameter
+       rule. */
+    font-size: 1em;
 }
 
 .user-vignette__origin--external {
     color: var(--color-warning-orange-text);
+}
+
+/* Avatar-only renders (the user-menu toolbar button is the canonical
+   case) have no sibling row to anchor the badge against. The
+   `--overlay` modifier puts it on the bottom-right corner of the
+   picture at exactly 30% of the avatar diameter, regardless of size
+   variant. `--avatar-size` is declared per variant on the wrapper and
+   inherits to the badge via the cascade. Halo ring lifts the icon off
+   coloured avatars + the user's photo so it stays readable across the
+   palette. */
+.user-vignette__origin--overlay {
+    position: absolute;
+    right: -2px;
+    bottom: -2px;
+    /* `.oxi-icon` (the SVG that replaces the original `<i>`) is
+       `width: 1em; height: 1em`, so font-size IS the rendered size. */
+    font-size: calc(var(--avatar-size, 24px) * 0.3);
+    background: var(--color-bg-surface);
+    border-radius: 50%;
+    box-shadow: 0 0 0 1.5px var(--color-bg-surface);
 }
 
 .user-vignette__origin.hidden {
