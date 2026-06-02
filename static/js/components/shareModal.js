@@ -26,6 +26,7 @@ import { buildPasswordChip } from '../utils/passwordChip.js';
 import { groupDisplayName, groupIconClass, groupIconClassByVirtual } from './groupDisplay.js';
 import { createGroupVignette } from './groupVignette.js';
 import { Modal } from './modal.js';
+import { createPendingEmailVignette } from './pendingEmailVignette.js';
 import { createUserVignette } from './userVignette.js';
 
 /** @import {FileItem, FolderItem, Grant, ContactItem, MemberEntry, LinkEntry, DraftLink, ShareRoleEnum} from '../core/types.js' */
@@ -41,6 +42,36 @@ import { createUserVignette } from './userVignette.js';
  * @property {boolean} is_virtual
  * @property {'group'} _kind
  */
+
+/**
+ * Synthetic "invite by email" suggestion injected at the bottom of the
+ * autocomplete dropdown when the query parses as an email and matches
+ * no existing contact. Same overall shape as `GroupSuggestion` so the
+ * staging / chip / commit paths can treat all three suggestion kinds
+ * uniformly via the `_kind` discriminator.
+ *
+ * `id` here is the email itself — it's a stable dedup key pre-resolution.
+ * The server replaces it with a real user UUID on Apply.
+ *
+ * @typedef {Object} EmailSuggestion
+ * @property {string}  id       Lowercased trimmed email (also the dedup key).
+ * @property {string}  email    Display form (lowercased trimmed).
+ * @property {'email'} _kind
+ */
+
+/**
+ * Permissive client-side email regex — matches anything with at least
+ * one non-whitespace local-part, an `@`, and a domain with a dot.
+ * The server's `normalize_email` is the authority; this is just enough
+ * to decide whether to surface the synthetic "invite by email"
+ * suggestion in the dropdown.
+ *
+ * @param {string} q
+ * @returns {boolean}
+ */
+function _looksLikeEmail(q) {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(q);
+}
 
 /** Permissions that belong to each role (must mirror the Rust DTO). */
 const ROLE_PERMISSIONS = {
@@ -136,7 +167,7 @@ const shareModal = {
     /** @type {DraftLink[]} */
     _newLinks: [],
 
-    /** @type {Array<ContactItem | GroupSuggestion>} */
+    /** @type {Array<ContactItem | GroupSuggestion | EmailSuggestion>} */
     _stagedUsers: [],
 
     /** @type {ShareRoleEnum} */
@@ -381,9 +412,27 @@ const shareModal = {
                     }
                 })();
                 const filtered = currentUserId ? contacts.filter((c) => c.id !== currentUserId) : contacts;
+
+                // Synthesize an "invite by email" row when the query parses
+                // as an email AND no existing contact already matches that
+                // address (we don't want to compete with the existing
+                // contact suggestion). Lowercased+trimmed for the dedup
+                // key — same shape the server applies via normalize_email.
+                /** @type {EmailSuggestion[]} */
+                let emailItems = [];
+                if (_looksLikeEmail(q)) {
+                    const normalised = q.trim().toLowerCase();
+                    const existing = filtered.some((c) => (c.email ?? []).some((e) => e.email.toLowerCase() === normalised));
+                    if (!existing) {
+                        emailItems = [{ id: normalised, email: normalised, _kind: 'email' }];
+                    }
+                }
+
                 // Groups first (they're a smaller, distinctively-iconed set),
-                // then contacts. Cap at 8 combined.
-                const combined = [...groupItems, ...filtered].slice(0, 8);
+                // then contacts, then the email-invite suggestion at the
+                // bottom (it's the catch-all when nothing else matches).
+                // Cap at 8 combined.
+                const combined = [...groupItems, ...filtered, ...emailItems].slice(0, 8);
                 this._renderSuggestions(dropdown, combined, (item) => {
                     this._stageUser(item, input, dropdown, addBtn);
                 });
@@ -416,9 +465,9 @@ const shareModal = {
     },
 
     /**
-     * @param {HTMLElement}                                          container
-     * @param {Array<ContactItem | GroupSuggestion>}                 results
-     * @param {(c: ContactItem | GroupSuggestion) => void}           onSelect
+     * @param {HTMLElement}                                                          container
+     * @param {Array<ContactItem | GroupSuggestion | EmailSuggestion>}               results
+     * @param {(c: ContactItem | GroupSuggestion | EmailSuggestion) => void}         onSelect
      */
     _renderSuggestions(container, results, onSelect) {
         container.replaceChildren();
@@ -434,6 +483,14 @@ const shareModal = {
             if (c._kind === 'group') {
                 const g = /** @type {GroupSuggestion} */ (c);
                 item.appendChild(createGroupVignette(groupDisplayName(g), 'sm', { icon: groupIconClass(g) }));
+            } else if (c._kind === 'email') {
+                const e = /** @type {EmailSuggestion} */ (c);
+                item.classList.add('smd-suggestion-item--email');
+                item.appendChild(createPendingEmailVignette(e.email, 'sm'));
+                const hint = document.createElement('span');
+                hint.className = 'smd-suggestion-hint';
+                hint.textContent = i18n.t('share.inviteByEmail', 'Invite by email — invitation will be sent');
+                item.appendChild(hint);
             } else {
                 item.appendChild(createUserVignette(c.id, 'sm', { showEmail: true }));
             }
@@ -449,17 +506,25 @@ const shareModal = {
     },
 
     /**
-     * @param {ContactItem | GroupSuggestion} contact
-     * @param {HTMLInputElement}              inputEl
-     * @param {HTMLElement}                   dropdown
-     * @param {HTMLButtonElement}             addBtn
+     * @param {ContactItem | GroupSuggestion | EmailSuggestion} contact
+     * @param {HTMLInputElement}                                inputEl
+     * @param {HTMLElement}                                     dropdown
+     * @param {HTMLButtonElement}                               addBtn
      */
     _stageUser(contact, inputEl, dropdown, addBtn) {
         // Idempotent: skip duplicates and already-existing members. Match on
-        // id *and* kind so a user and a group sharing a UUID collision (in
-        // theory impossible; in practice harmless) wouldn't shadow each other.
-        const kind = contact._kind === 'group' ? 'group' : 'user';
-        const alreadyMember = this._localMembers.some((m) => m.grant.subject.id === contact.id && m.grant.subject.type === kind && m._op !== 'remove');
+        // id *and* kind so a user / group / email-invite sharing the same
+        // string value (unlikely but harmless) wouldn't shadow each other.
+        const kind = contact._kind === 'group' ? 'group' : contact._kind === 'email' ? 'email' : 'user';
+        const alreadyMember = this._localMembers.some((m) => {
+            if (m._op === 'remove') return false;
+            // Match against existing committed members on (type, id) — for
+            // email-staged members, the dedup happens via `_invitedEmail`.
+            if (kind === 'email') {
+                return m._invitedEmail?.toLowerCase() === contact.id.toLowerCase();
+            }
+            return m.grant.subject.id === contact.id && m.grant.subject.type === kind;
+        });
         const alreadyStaged = this._stagedUsers.some((u) => u.id === contact.id && (u._kind ?? 'user') === kind);
         if (alreadyMember || alreadyStaged) return;
 
@@ -497,19 +562,22 @@ const shareModal = {
             const chip = document.createElement('div');
             chip.className = 'smd-chip';
 
-            const visual =
-                c._kind === 'group'
-                    ? (() => {
-                          const g = /** @type {GroupSuggestion} */ (c);
-                          return createGroupVignette(groupDisplayName(g), 'xs', { icon: groupIconClass(g) });
-                      })()
-                    : createUserVignette(c.id, 'xs');
+            let visual;
+            if (c._kind === 'group') {
+                const g = /** @type {GroupSuggestion} */ (c);
+                visual = createGroupVignette(groupDisplayName(g), 'xs', { icon: groupIconClass(g) });
+            } else if (c._kind === 'email') {
+                const e = /** @type {EmailSuggestion} */ (c);
+                visual = createPendingEmailVignette(e.email, 'xs');
+            } else {
+                visual = createUserVignette(c.id, 'xs');
+            }
 
             const rm = document.createElement('button');
             rm.className = 'smd-chip-remove';
             rm.innerHTML = '&times;';
             rm.title = i18n.t('actions.remove', 'Remove');
-            const kind = c._kind === 'group' ? 'group' : 'user';
+            const kind = c._kind === 'group' ? 'group' : c._kind === 'email' ? 'email' : 'user';
             rm.addEventListener('click', () => {
                 this._stagedUsers = this._stagedUsers.filter((u) => !(u.id === c.id && (u._kind ?? 'user') === kind));
                 this._refreshChips();
@@ -525,7 +593,13 @@ const shareModal = {
 
     _commitStagedUsers() {
         for (const contact of this._stagedUsers) {
-            const subjectType = contact._kind === 'group' ? 'group' : 'user';
+            // Email-typed stagings carry a transient `_invitedEmail` on the
+            // resulting MemberEntry. The pre-commit MemberRow rendering
+            // (`_buildMemberRow`) and the `_applyAll` API-call branch both
+            // key off that field — they don't try to read a UUID out of
+            // `subject.id` (which is the email string in this case, not a
+            // real user UUID until the server resolves it).
+            const subjectType = contact._kind === 'group' ? 'group' : contact._kind === 'email' ? 'user' : 'user';
             /** @type {Grant} */
             const placeholderGrant = {
                 id: '', // not yet persisted
@@ -541,7 +615,8 @@ const shareModal = {
                 role: this._stagedRole,
                 _op: 'new',
                 expires_at: this._stagedExpiry,
-                _displayName: contact._kind === 'group' ? /** @type {GroupSuggestion} */ (contact).name : undefined
+                _displayName: contact._kind === 'group' ? /** @type {GroupSuggestion} */ (contact).name : undefined,
+                _invitedEmail: contact._kind === 'email' ? /** @type {EmailSuggestion} */ (contact).email : undefined
             });
         }
         this._stagedUsers = [];
@@ -616,12 +691,20 @@ const shareModal = {
         const row = document.createElement('div');
         row.className = 'smd-member-row';
 
+        // Three rendering paths:
+        //   - Group subject → group vignette
+        //   - Pre-commit email-invite (carries `_invitedEmail`) → pending
+        //     vignette seeded from the email; no UUID exists yet.
+        //   - Regular user subject → user vignette (which itself renders
+        //     the external badge automatically via systemUsers).
         const vignette =
             entry.grant.subject.type === 'group'
                 ? createGroupVignette(entry._displayName ?? entry.grant.subject.id, 'md', {
                       icon: groupIconClassByVirtual(entry._isVirtual)
                   })
-                : createUserVignette(entry.grant.subject.id, 'md');
+                : entry._invitedEmail
+                  ? createPendingEmailVignette(entry._invitedEmail, 'md')
+                  : createUserVignette(entry.grant.subject.id, 'md');
 
         const roleSelect = document.createElement('select');
         roleSelect.className = 'smd-member-role-select';
@@ -939,8 +1022,14 @@ const shareModal = {
                         expires_at: expiresIso
                     });
                 } else if (m._op === 'new') {
+                    // Email-invite path: the staged MemberEntry carries
+                    // `_invitedEmail`; the server resolves it to (or
+                    // creates) an external user and returns the actual
+                    // user_id in the grant DTO. Until `fetchOutgoingGrants`
+                    // refreshes below, the row keeps the pending vignette.
+                    const subject = m._invitedEmail ? { type: 'email', email: m._invitedEmail } : { type: m.grant.subject.type, id: m.grant.subject.id };
                     await grants.createGrant({
-                        subject: { type: m.grant.subject.type, id: m.grant.subject.id },
+                        subject,
                         resource: { type: itemType, id: item.id },
                         role: m.role,
                         expires_at: expiresIso

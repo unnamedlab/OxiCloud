@@ -59,6 +59,16 @@ export const app = {
     /** @type {string | null} */
     userHomeFolderName: null,
 
+    /**
+     * `true` when the authenticated caller is an external (grant-only)
+     * user. Externals don't own a home folder, can't enumerate users,
+     * and land on `/#/sharedwithme` by default. Set by `refreshUserData`
+     * and the cached-data load path from the `is_external` field of
+     * `/api/auth/me`'s response.
+     * @type {boolean}
+     */
+    isExternalUser: false,
+
     /** @type {Array<{id: string, name: string}>} */
     breadcrumbPath: [], // Array of {id, name} tracking folder navigation hierarchy
 

@@ -15,7 +15,7 @@
  * returns false and `getDisplayName()` returns a shortened UUID.
  */
 
-/** @import {ContactItem} from '../core/types.js' */
+/** @import {ContactItem, User} from '../core/types.js' */
 
 import { addressBook, SYSTEM_BOOK_ID } from './addressBook.js';
 
@@ -27,6 +27,16 @@ let _photoIndex = null;
 
 /** @type {Map<string, string | null> | null} userId → primary email (or null), built lazily */
 let _emailIndex = null;
+
+/** @type {Map<string, boolean> | null} userId → is_external flag, built lazily.
+ *  The system-book bulk load populates `false` for every entry (PR 6 filters
+ *  externals out of the system book). Externals appear only when their UUID
+ *  shows up in a grant — `_resolveMissing` then back-fills via `/api/users/{id}`.
+ */
+let _externalIndex = null;
+
+/** @type {Map<string, Promise<void>>} userId → in-flight fetch (de-dupe). */
+const _inflight = new Map();
 
 /**
  * Derive the best human-readable name from a contact.
@@ -61,12 +71,16 @@ async function _ensureIndex() {
             return [c.id, primary];
         })
     );
+    // System book is internal-only post-PR-6 → every entry here is is_external=false.
+    _externalIndex = new Map(contacts.map((c) => [c.id, false]));
 
     // Inject the current user if they are not already in the index
     try {
         const raw = localStorage.getItem('oxicloud_user');
         if (raw) {
-            const u = /** @type {{id?:string, display_name?:string, username?:string, email?:string, image?:string|null}} */ (JSON.parse(raw));
+            const u = /** @type {{id?:string, display_name?:string, username?:string, email?:string, image?:string|null, is_external?:boolean}} */ (
+                JSON.parse(raw)
+            );
             if (u?.id) {
                 if (!_index.has(u.id)) {
                     const name = u.display_name || u.username || u.email || `${u.id.slice(0, 8)}…`;
@@ -78,11 +92,54 @@ async function _ensureIndex() {
                 if (!_emailIndex.has(u.id)) {
                     _emailIndex.set(u.id, u.email ?? null);
                 }
+                if (!_externalIndex.has(u.id)) {
+                    _externalIndex.set(u.id, u.is_external ?? false);
+                }
             }
         }
     } catch {
         // localStorage not available or JSON is invalid — silently skip
     }
+}
+
+/**
+ * Fetch a single user profile from `/api/users/{id}` and back-fill every
+ * cache map. Used when a userId surfaces (e.g. via a grant) that wasn't
+ * part of the bulk system-book load — typically external users.
+ *
+ * In-flight requests are de-duplicated through `_inflight` so concurrent
+ * vignette renders for the same external userId issue only one HTTP call.
+ * Failures (404 / 403 / 429 / network) leave the caches in their
+ * default-unknown state; callers fall back to UUID-prefix display.
+ *
+ * @param {string} userId
+ * @returns {Promise<void>}
+ */
+async function _resolveMissing(userId) {
+    if (_index?.has(userId)) return;
+    const pending = _inflight.get(userId);
+    if (pending) return pending;
+
+    const promise = (async () => {
+        try {
+            const resp = await fetch(`/api/users/${encodeURIComponent(userId)}`, {
+                credentials: 'same-origin'
+            });
+            if (!resp.ok) return;
+            /** @type {User} */
+            const u = await resp.json();
+            _index?.set(u.id, u.username || u.email || `${u.id.slice(0, 8)}…`);
+            _photoIndex?.set(u.id, u.image ?? null);
+            _emailIndex?.set(u.id, u.email ?? null);
+            _externalIndex?.set(u.id, !!u.is_external);
+        } catch {
+            // network error — caches stay unset; getters fall back to defaults
+        } finally {
+            _inflight.delete(userId);
+        }
+    })();
+    _inflight.set(userId, promise);
+    return promise;
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -111,13 +168,17 @@ function getDisplayNameSync(userId) {
 
 /**
  * Resolve a user UUID to a display name.
- * Awaits the first load if not yet cached; subsequent calls resolve instantly.
+ * Awaits the first load if not yet cached; subsequent calls resolve
+ * instantly. On a system-book miss (e.g. external users, which are
+ * filtered out of the system address book), back-fills via
+ * `/api/users/{id}` once per session.
  *
  * @param {string} userId
  * @returns {Promise<string>}
  */
 async function getDisplayName(userId) {
     await _ensureIndex();
+    if (!_index?.has(userId)) await _resolveMissing(userId);
     return _index?.get(userId) ?? `${userId.slice(0, 8)}…`;
 }
 
@@ -130,6 +191,7 @@ async function getDisplayName(userId) {
  */
 async function getPhoto(userId) {
     await _ensureIndex();
+    if (!_index?.has(userId)) await _resolveMissing(userId);
     return _photoIndex?.get(userId) ?? null;
 }
 
@@ -142,7 +204,24 @@ async function getPhoto(userId) {
  */
 async function getEmail(userId) {
     await _ensureIndex();
+    if (!_index?.has(userId)) await _resolveMissing(userId);
     return _emailIndex?.get(userId) ?? null;
+}
+
+/**
+ * Resolve a user UUID to whether they are an external (grant-only)
+ * recipient. Defaults to `false` (internal-by-assumption) for unknown
+ * UUIDs so callers can render without an extra null-check.
+ * Awaits the first system-book load; falls back to `/api/users/{id}`
+ * on miss — externals are excluded from the system book per PR 6.
+ *
+ * @param {string} userId
+ * @returns {Promise<boolean>}
+ */
+async function getIsExternal(userId) {
+    await _ensureIndex();
+    if (!_externalIndex?.has(userId)) await _resolveMissing(userId);
+    return _externalIndex?.get(userId) ?? false;
 }
 
 /**
@@ -172,4 +251,13 @@ function isAvailable() {
     return addressBook.isSystemAvailable();
 }
 
-export const systemUsers = { prefetch, getDisplayName, getDisplayNameSync, getPhoto, getEmail, refreshCurrentUserPhoto, isAvailable };
+export const systemUsers = {
+    prefetch,
+    getDisplayName,
+    getDisplayNameSync,
+    getPhoto,
+    getEmail,
+    getIsExternal,
+    refreshCurrentUserPhoto,
+    isAvailable
+};

@@ -90,6 +90,12 @@ function _applyPhoto(avatar, photoUrl, name) {
  *   When true (and showName is true), the primary email address is shown below
  *   the name in a lighter style.  Name and email are wrapped in a
  *   `.user-vignette__info` column.  Has no effect when showName is false.
+ * @property {boolean} [showOrigin=true]
+ *   When true (the default), an `is_external` badge overlays the
+ *   bottom-right of the avatar for external users only — internal
+ *   users render unchanged. Set false to suppress the badge in
+ *   contexts where the distinction would be noise (e.g. the
+ *   logged-in-user menu, where the caller is implicitly internal).
  */
 
 /**
@@ -101,7 +107,7 @@ function _applyPhoto(avatar, photoUrl, name) {
  * @param {VignetteOptions} [options]
  * @returns {HTMLElement}
  */
-export function createUserVignette(userId, size = 'sm', { showName = true, showEmail = false } = {}) {
+export function createUserVignette(userId, size = 'sm', { showName = true, showEmail = false, showOrigin = true } = {}) {
     const colorIdx = _colorIndex(userId);
 
     const wrapper = /** @type {HTMLElement} */ (document.createElement('span'));
@@ -112,6 +118,18 @@ export function createUserVignette(userId, size = 'sm', { showName = true, showE
     // Temporary placeholder: first two chars of UUID
     avatar.textContent = userId.slice(0, 2).toUpperCase();
     wrapper.appendChild(avatar);
+
+    // Origin badge (external-only — internal users render unchanged).
+    // Created hidden; revealed once `getIsExternal` resolves to true.
+    // FontAwesome glyph classes are added alongside the component
+    // class so the icon renders as a building-with-x glyph.
+    /** @type {HTMLElement | null} */
+    const originEl = showOrigin ? document.createElement('i') : null;
+    if (originEl) {
+        originEl.className = 'user-vignette__origin user-vignette__origin--external hidden fa-solid fa-building-circle-xmark';
+        originEl.setAttribute('aria-hidden', 'true');
+        avatar.appendChild(originEl);
+    }
 
     /** @type {HTMLElement | null} */
     const nameEl = showName ? document.createElement('span') : null;
@@ -136,18 +154,33 @@ export function createUserVignette(userId, size = 'sm', { showName = true, showE
         }
     }
 
-    // Resolve name, photo, and (when requested) email asynchronously.
-    Promise.all([systemUsers.getDisplayName(userId), systemUsers.getPhoto(userId), emailEl ? systemUsers.getEmail(userId) : Promise.resolve(null)]).then(
-        ([name, photo, email]) => {
-            if (nameEl) nameEl.textContent = name;
-            if (emailEl) emailEl.textContent = email ?? '';
-            if (photo) {
-                _applyPhoto(avatar, photo, name);
-            } else {
-                avatar.textContent = _initials(name);
+    // Resolve name, photo, email, and (when requested) is_external
+    // asynchronously. All four go through the systemUsers cache so a
+    // single fetch back-fills every facet.
+    Promise.all([
+        systemUsers.getDisplayName(userId),
+        systemUsers.getPhoto(userId),
+        emailEl ? systemUsers.getEmail(userId) : Promise.resolve(null),
+        originEl ? systemUsers.getIsExternal(userId) : Promise.resolve(false)
+    ]).then(([name, photo, email, isExternal]) => {
+        if (nameEl) nameEl.textContent = name;
+        if (emailEl) emailEl.textContent = email ?? '';
+        if (photo) {
+            _applyPhoto(avatar, photo, name);
+        } else {
+            avatar.textContent = _initials(name);
+        }
+        // Both branches above replace the avatar's children, wiping the
+        // pre-attached badge node. Re-attach AFTER the avatar's content
+        // is final so the badge sits on top.
+        if (originEl) {
+            avatar.appendChild(originEl);
+            if (isExternal) {
+                originEl.classList.remove('hidden');
+                originEl.title = 'External user';
             }
         }
-    );
+    });
 
     return wrapper;
 }

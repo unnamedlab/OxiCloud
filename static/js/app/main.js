@@ -407,8 +407,11 @@ function setupActionsBarDelegation() {
 function deserializeHash() {
     const hashContext = /** type {OxiContext} */ {};
 
+    // External users have no home folder; default them to /#/sharedwithme
+    // (their actual landing) so the URL bar reflects what they'll see.
+    // Internal users default to the Files section.
     // FIXME rename files into drive ?
-    hashContext.section = 'files';
+    hashContext.section = app.isExternalUser ? 'sharedwithme' : 'files';
 
     const hash_elements = window.location.hash.split('/');
 

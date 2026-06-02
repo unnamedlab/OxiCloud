@@ -141,6 +141,12 @@
  */
 
 /**
+ * Wire shape of `UserDto` (backend: `src/application/dtos/user_dto.rs`).
+ * Returned by `/api/auth/me`, `/api/users/{id}`, the login response, and
+ * the admin user-management endpoints. Optional fields (`image`,
+ * `given_name`, `family_name`) are omitted when null on the wire — the
+ * `?` markers below reflect that.
+ *
  * @typedef {Object} User
  * @property {string} id
  * @property {string} username
@@ -148,11 +154,16 @@
  * @property {string} role
  * @property {number} storage_quota_bytes
  * @property {number} storage_used_bytes
- * @property {number} created_at
- * @property {number} updated_at
- * @property {number} last_login_at
+ * @property {string} created_at  ISO 8601 timestamp
+ * @property {string} updated_at  ISO 8601 timestamp
+ * @property {string|null} [last_login_at]  ISO 8601 timestamp; null until first login
  * @property {boolean} active
- * @property {string}  auth_provider
+ * @property {string}  auth_provider  "local" or OIDC provider id
+ * @property {string|null} [image]    Avatar URL or data URI
+ * @property {boolean} can_edit_image  False for OIDC-only users
+ * @property {boolean} is_external    True for magic-link / OIDC-only / OCM recipients
+ * @property {string} [given_name]    OIDC `given_name` claim, when set
+ * @property {string} [family_name]   OIDC `family_name` claim, when set
  */
 
 /**
@@ -447,6 +458,12 @@
  * @property {string|null}  [expires_at]  - YYYY-MM-DD expiry date string, or null for no expiry.
  * @property {string}       [_displayName] - Optional human-readable label (set for group subjects so the row can show the group name; user subjects resolve their name via `createUserVignette`).
  * @property {boolean}      [_isVirtual]  - True when this row's subject is a virtual (system-managed) group, so the vignette renders with the virtual-group icon.
+ * @property {string}       [_invitedEmail] - Transient marker for an
+ *   email-invite that hasn't been committed yet. When set, the row
+ *   renders with `pendingEmailVignette` (no UUID known) and
+ *   `_applyAll` POSTs `subject.type=email` to `/api/grants`. Cleared
+ *   on the next `fetchOutgoingGrants` refresh once the server has
+ *   resolved the recipient to a real user UUID.
  */
 
 /**

@@ -299,9 +299,15 @@ function switchToFilesSection() {
     //reset files view + remove any error
     ui.resetFilesList();
 
-    // Reset to home folder and update breadcrumb
-    app.currentPath = app.userHomeFolderId || '';
-    app.breadcrumbPath = [];
+    // Reset to home folder and update breadcrumb. External users have no
+    // home — leave `currentPath` as the caller set it (e.g. the magic-link
+    // landing's hash context) so loadFiles() doesn't fall through to
+    // `/api/folders//resources`. If `currentPath` is still empty by the
+    // time loadFiles() runs, it self-redirects to /#/sharedwithme.
+    if (!app.isExternalUser) {
+        app.currentPath = app.userHomeFolderId || '';
+        app.breadcrumbPath = [];
+    }
     ui.updateBreadcrumb();
     if (batchToolbar) batchToolbar.clear();
 

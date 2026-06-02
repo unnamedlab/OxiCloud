@@ -157,7 +157,8 @@
         "shareCopied": "Link copied to clipboard",
         "shareCreated": "Share link created successfully",
         "shareUpdated": "Share settings updated successfully",
-        "shareRemoved": "Share removed successfully"
+        "shareRemoved": "Share removed successfully",
+        "inviteByEmail": "Invite by email — invitation will be sent"
     },
     "share_dialogTitle": "Share Link",
     "share_linkLabel": "Share Link:",

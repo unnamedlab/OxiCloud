@@ -157,7 +157,8 @@
         "shareCopied": "Lien copié dans le presse-papiers",
         "shareCreated": "Lien de partage créé avec succès",
         "shareUpdated": "Paramètres de partage mis à jour",
-        "shareRemoved": "Partage supprimé avec succès"
+        "shareRemoved": "Partage supprimé avec succès",
+        "inviteByEmail": "Inviter par e-mail — une invitation sera envoyée"
     },
     "share_dialogTitle": "Lien de partage",
     "share_linkLabel": "Lien partagé :",

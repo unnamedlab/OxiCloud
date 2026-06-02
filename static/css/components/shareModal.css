@@ -138,6 +138,22 @@
     min-width: 0;
 }
 
+/* "Invite by email" synthetic suggestion (PR 11.3). The hint label sits
+   to the right of the pending-email vignette and stays muted so the
+   row reads as auxiliary — the action it commits is more consequential
+   than a regular contact pick. */
+.smd-suggestion-item--email {
+    border-top: 1px solid var(--color-border);
+}
+
+.smd-suggestion-hint {
+    margin-left: auto;
+    color: var(--color-text-faint);
+    font-size: 12px;
+    font-style: italic;
+    flex-shrink: 0;
+}
+
 /* Role picker beside the search box */
 .smd-role-select {
     padding: 9px 10px;

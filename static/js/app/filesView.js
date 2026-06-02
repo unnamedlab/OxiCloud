@@ -405,6 +405,17 @@ async function loadFiles(options = { insertHistory: true }) {
     try {
         if (!app.userHomeFolderId) await resolveHomeFolder();
 
+        // External users have no home folder. If they land on /files
+        // without a specific folder id in the URL, redirect them to
+        // /#/sharedwithme — their actual landing page. This guards
+        // against `fetchResourcesPage('')` building `/api/folders//resources`.
+        if (app.isExternalUser && (!app.currentPath || app.currentPath === '')) {
+            clearTimeout(spinnerTimeout);
+            _loading = false;
+            window.location.hash = '#/sharedwithme';
+            return;
+        }
+
         // Resolve path to home folder when none is set
         if (!app.currentPath || app.currentPath === '') {
             if (app.userHomeFolderId) {

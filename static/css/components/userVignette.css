@@ -32,6 +32,8 @@
     width: 24px;
     height: 24px;
     font-size: 10px;
+    /* Anchor for the bottom-right `__origin` badge. */
+    position: relative;
 }
 
 .user-vignette__name {
@@ -175,4 +177,38 @@
 .user-vignette-group .user-vignette__avatar .oxi-icon {
     width: 100%;
     height: 100%;
+}
+
+/* ── Origin badge (external-user marker) ───────────────────────────────────
+ * Tiny FontAwesome icon overlaid on the bottom-right of the avatar circle.
+ * Shown ONLY for external users — internal users render the bare avatar
+ * (Ed's "external only" preference: quiet UI for the common case).
+ *
+ * The white background ring lifts the icon off coloured avatars so it
+ * stays readable across the full palette.                                  */
+
+.user-vignette__origin {
+    position: absolute;
+    /* Bottom-right corner, slightly tucked past the avatar's edge. */
+    right: -2px;
+    bottom: -2px;
+    /* Scale to ~40% of avatar diameter via em — the parent's font-size
+       changes per size variant, so the badge naturally tracks. */
+    font-size: 0.9em;
+    line-height: 1;
+    background: var(--color-bg-surface);
+    color: var(--color-text-secondary);
+    border-radius: 50%;
+    /* Halo ring so the icon visually detaches from coloured avatars. */
+    box-shadow: 0 0 0 1.5px var(--color-bg-surface);
+    /* Don't intercept hover events on the avatar itself. */
+    pointer-events: auto;
+}
+
+.user-vignette__origin--external {
+    color: var(--color-warning-orange-text);
+}
+
+.user-vignette__origin.hidden {
+    display: none;
 }

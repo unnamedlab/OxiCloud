@@ -3,7 +3,6 @@
  */
 
 import { getCsrfHeaders } from '../core/csrf.js';
-import { loadFiles } from './filesView.js';
 import { updateStorageUsageDisplay } from './main.js';
 import { app } from './state.js';
 import { ui } from './ui.js';
@@ -40,6 +39,7 @@ async function refreshUserData() {
         console.log('Storage from server: used=', userData.storage_used_bytes, 'quota=', userData.storage_quota_bytes);
 
         localStorage.setItem(USER_DATA_KEY, JSON.stringify(userData));
+        app.isExternalUser = !!userData.is_external;
         updateStorageUsageDisplay(userData);
         return userData;
     } catch (error) {
@@ -94,7 +94,14 @@ async function checkAuthentication() {
         console.log('Checking session via /api/auth/me...');
 
         /** @type {User} */
+        /** @type {User} */
         const userData = JSON.parse(localStorage.getItem(USER_DATA_KEY) || '{}');
+        // Restore the external-user flag eagerly from cache so the
+        // resolveHomeFolder short-circuit fires before the /api/auth/me
+        // refresh completes. The parse may produce a sparse object on
+        // first load — `is_external` defaulting to falsy is correct
+        // for the internal-user-by-default contract.
+        app.isExternalUser = !!userData.is_external;
         if (userData.username) {
             // We have cached user data — render immediately, refresh in background
             updateUserMenuData();
@@ -134,14 +141,22 @@ async function checkAuthentication() {
             await resolveHomeFolder();
             window.dispatchEvent(new CustomEvent('authenticationDone'));
         } else {
-            // No cached user data — must verify session from server
+            // No cached user data — must verify session from server.
+            // This is the first-load path for magic-link redemptions
+            // (cookies set server-side, no prior localStorage).
             console.log('No cached user data, fetching from server');
             try {
                 const freshData = await refreshUserData();
                 if (freshData?.username) {
                     updateUserMenuData();
                     updateStorageUsageDisplay(freshData);
-                    resolveHomeFolder().then(() => loadFiles());
+                    await resolveHomeFolder();
+                    // Defer to the `authenticationDone` listener in main.js
+                    // so the hash-driven section + path init runs in one
+                    // place (was previously a `loadFiles()` here which
+                    // bypassed the hash context and produced
+                    // `/api/folders//resources` for external users).
+                    window.dispatchEvent(new CustomEvent('authenticationDone'));
                 } else {
                     console.warn('Could not retrieve user data, redirecting to login');
                     localStorage.removeItem(USER_DATA_KEY);
@@ -162,6 +177,16 @@ async function checkAuthentication() {
 
 async function resolveHomeFolder() {
     if (app.userHomeFolderId) return;
+    // External users (grant-only recipients) do not own a home folder
+    // by design — see `HomeFolderLifecycleHook::provision_if_needed`
+    // which short-circuits on `is_external`. Skip the fetch + leave
+    // `userHomeFolderId` null so downstream code knows to land them on
+    // /#/sharedwithme instead of /files.
+    if (app.isExternalUser) {
+        console.log('External user — skipping home-folder resolution');
+        app.breadcrumbPath = [];
+        return;
+    }
     try {
         const response = await fetch('/api/folders', {
             credentials: 'same-origin'
