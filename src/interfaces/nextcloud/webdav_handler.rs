@@ -348,11 +348,18 @@ async fn handle_get(
         chrono::DateTime::<Utc>::from_timestamp(timestamp_to_i64(file.modified_at), 0)
             .unwrap_or_else(Utc::now);
 
+    // ETag comes from `FileDto::etag` (populated from `File::etag()`
+    // in the `From<File>` impl) — single source of truth, so GET,
+    // HEAD, PUT-response, MOVE, and PROPFIND all emit byte-identical
+    // values for the same file. NC's sync engine compares cached
+    // PROPFIND ETags against GET/HEAD responses; using `file.id` here
+    // (a UUID) while PROPFIND emitted the blob hash made NC see
+    // every file as "remotely changed" on first descent.
     Ok(Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, file.mime_type.as_ref())
         .header(header::CONTENT_LENGTH, file.size)
-        .header(header::ETAG, format!("\"{}\"", file.id))
+        .header(header::ETAG, format!("\"{}\"", file.etag))
         .header(header::LAST_MODIFIED, modified_at.to_rfc2822())
         .body(Body::from_stream(std::pin::Pin::from(stream)))
         .unwrap())
@@ -400,11 +407,14 @@ async fn handle_head(
         chrono::DateTime::<Utc>::from_timestamp(timestamp_to_i64(file.modified_at), 0)
             .unwrap_or_else(Utc::now);
 
+    // ETag comes from `FileDto::etag` — see the same comment block on
+    // the GET handler. HEAD and GET must agree byte-for-byte; pulling
+    // both from the same DTO field guarantees that.
     Ok(Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, file.mime_type.as_ref())
         .header(header::CONTENT_LENGTH, file.size)
-        .header(header::ETAG, format!("\"{}\"", file.id))
+        .header(header::ETAG, format!("\"{}\"", file.etag))
         .header(header::LAST_MODIFIED, modified_at.to_rfc2822())
         .body(Body::empty())
         .unwrap())
@@ -850,9 +860,13 @@ async fn handle_move(
         let dest_internal = nc_to_internal_path(&user.username, &dest_subpath)?;
         let mut builder = Response::builder().status(StatusCode::CREATED);
         if let Ok(moved) = file_service.get_file_by_path(&dest_internal).await {
+            // Route through `FileDto::etag` so the MOVE response
+            // matches what a subsequent PROPFIND on the destination
+            // will return — `moved.id` (UUID) would differ from the
+            // blob hash and trigger NC's "remote changed" detection.
             builder = builder
-                .header(header::ETAG, format!("\"{}\"", moved.id))
-                .header("oc-etag", format!("\"{}\"", moved.id));
+                .header(header::ETAG, format!("\"{}\"", moved.etag))
+                .header("oc-etag", format!("\"{}\"", moved.etag));
         }
 
         return Ok(builder.body(Body::empty()).unwrap());
@@ -1094,7 +1108,10 @@ pub fn write_folder_response<W: std::io::Write>(
             .unwrap_or_else(Utc::now);
 
     write_text_element(xml, "d:getlastmodified", &modified_at.to_rfc2822())?;
-    write_text_element(xml, "d:getetag", &format!("\"{}\"", folder.id))?;
+    // Route through `FolderDto::etag` (= `Folder::etag()`, currently
+    // the folder UUID — see the entity for the documented v1 formula
+    // and the follow-up plan to make it descendant-aware).
+    write_text_element(xml, "d:getetag", &format!("\"{}\"", folder.etag))?;
     write_text_element(xml, "d:getcontenttype", "httpd/unix-directory")?;
     write_text_element(xml, "d:getcontentlength", "0")?;
     write_text_element(xml, "d:creationdate", &created_at.to_rfc3339())?;

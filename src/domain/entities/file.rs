@@ -21,7 +21,8 @@ pub struct FileParts {
     pub created_at: u64,
     pub modified_at: u64,
     pub owner_id: Option<Uuid>,
-    pub etag: String,
+    /// BLAKE3 content hash. See [`File::content_hash`] for semantics.
+    pub blob_hash: String,
 }
 
 /**
@@ -66,8 +67,14 @@ pub struct File {
     /// Owner user ID (from storage.files.user_id)
     owner_id: Option<Uuid>,
 
-    /// Content-addressable ETag (= blob_hash). Changes on every content write.
-    etag: String,
+    /// BLAKE3 content hash. Stable across renames/moves, changes only
+    /// when the file's content bytes change. Source of truth for both
+    /// content-addressable storage and the HTTP ETag (via
+    /// [`File::etag`]). Exposed publicly via [`File::content_hash`]
+    /// so the REST API can surface it as a distinct concept from the
+    /// ETag (the ETag formula may grow to include `modified_at` etc.,
+    /// but `content_hash` remains the raw hash).
+    blob_hash: String,
 }
 
 // We no longer need this module, now we use a String directly
@@ -85,7 +92,7 @@ impl Default for File {
             created_at: 0,
             modified_at: 0,
             owner_id: None,
-            etag: String::new(),
+            blob_hash: String::new(),
         }
     }
 }
@@ -123,7 +130,7 @@ impl File {
             created_at: now,
             modified_at: now,
             owner_id: None,
-            etag: String::new(),
+            blob_hash: String::new(),
         })
     }
 
@@ -154,7 +161,7 @@ impl File {
             created_at,
             modified_at,
             owner_id: None,
-            etag: String::new(),
+            blob_hash: String::new(),
         })
     }
 
@@ -170,7 +177,7 @@ impl File {
         modified_at: u64,
         owner_id: Option<Uuid>,
     ) -> FileResult<Self> {
-        Self::with_timestamps_and_etag(
+        Self::with_timestamps_and_blob_hash(
             id,
             name,
             storage_path,
@@ -185,7 +192,7 @@ impl File {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn with_timestamps_and_etag(
+    pub fn with_timestamps_and_blob_hash(
         id: String,
         name: String,
         storage_path: StoragePath,
@@ -195,7 +202,7 @@ impl File {
         created_at: u64,
         modified_at: u64,
         owner_id: Option<Uuid>,
-        etag: String,
+        blob_hash: String,
     ) -> FileResult<Self> {
         if let Err(reason) = validate_storage_name(&name) {
             return Err(FileError::InvalidFileName(format!("{name}: {reason}")));
@@ -215,7 +222,7 @@ impl File {
             created_at,
             modified_at,
             owner_id,
-            etag,
+            blob_hash,
         })
     }
 
@@ -235,12 +242,44 @@ impl File {
             created_at: self.created_at,
             modified_at: self.modified_at,
             owner_id: self.owner_id,
-            etag: self.etag,
+            blob_hash: self.blob_hash,
         }
     }
 
+    /// Raw BLAKE3 content hash — the cryptographic identity of the
+    /// file's bytes. Stable across renames, moves, and metadata
+    /// updates. Changes only when the underlying content changes.
+    ///
+    /// This is **distinct from [`File::etag`]**: the ETag is an HTTP
+    /// cache token that may incorporate non-content signals (mtime,
+    /// permissions, …) in future revisions; `content_hash` is the
+    /// raw hash, suitable for content-addressable URLs, dedup
+    /// verification, and integrity audits. Keep both accessible —
+    /// the API layer can choose to expose `content_hash` even when
+    /// `etag` grows additional inputs.
+    pub fn content_hash(&self) -> &str {
+        &self.blob_hash
+    }
+
+    /// Opaque HTTP ETag string (raw, NOT HTTP-quoted). Handlers wrap
+    /// in `"…"` themselves at the HTTP boundary.
+    ///
+    /// **Current formula**: equal to [`File::content_hash`] —
+    /// content-addressable BLAKE3. Stable across renames, changes on
+    /// every content write. Every handler that emits a file ETag
+    /// header MUST route through this method (or the matching
+    /// [`FileDto::etag`] field populated from it) so `GET`, `HEAD`,
+    /// `PROPFIND`, `PUT` response, and `MOVE` all return
+    /// byte-identical values for the same file.
+    ///
+    /// A follow-up PR will fold `modified_at` into the formula
+    /// (`{blob_hash[..16]}-{modified_at}`) so a `x-oc-mtime`-only
+    /// update (NextCloud preserves client mtime) invalidates client
+    /// caches even when the content bytes are unchanged. At that
+    /// point `etag()` and `content_hash()` diverge — that is the
+    /// reason they are exposed as two separate methods today.
     pub fn etag(&self) -> &str {
-        &self.etag
+        self.content_hash()
     }
 
     // Getters
@@ -310,7 +349,7 @@ impl File {
             created_at,
             modified_at,
             owner_id: None,
-            etag: String::new(),
+            blob_hash: String::new(),
         }
     }
 
@@ -348,7 +387,7 @@ impl File {
             created_at: self.created_at,
             modified_at: now,
             owner_id: self.owner_id,
-            etag: self.etag.clone(),
+            blob_hash: self.blob_hash.clone(),
         })
     }
 
@@ -383,7 +422,7 @@ impl File {
             created_at: self.created_at,
             modified_at: now,
             owner_id: self.owner_id,
-            etag: self.etag.clone(),
+            blob_hash: self.blob_hash.clone(),
         })
     }
 
@@ -405,7 +444,7 @@ impl File {
             created_at: self.created_at,
             modified_at: now,
             owner_id: self.owner_id,
-            etag: self.etag.clone(),
+            blob_hash: self.blob_hash.clone(),
         }
     }
 }
@@ -466,5 +505,54 @@ mod tests {
         let renamed = renamed.unwrap();
         assert_eq!(renamed.name(), "newname.txt");
         assert_eq!(renamed.id(), "123"); // The ID does not change
+    }
+
+    /// Today `etag()` and `content_hash()` return the same string
+    /// (the v1 formula is identity); the test exists to catch a
+    /// future change that accidentally lets them disagree when they
+    /// should match. PR 2 will deliberately make them diverge.
+    #[test]
+    fn test_etag_currently_equals_content_hash() {
+        let file = File::with_timestamps_and_blob_hash(
+            "id-1".to_string(),
+            "file.txt".to_string(),
+            StoragePath::from_string("/file.txt"),
+            42,
+            "text/plain".to_string(),
+            None,
+            1_000,
+            2_000,
+            None,
+            "abcdef0123456789".to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(file.content_hash(), "abcdef0123456789");
+        assert_eq!(file.etag(), file.content_hash());
+    }
+
+    /// Renames must NOT change the content identity. Both `etag()`
+    /// and `content_hash()` are derived from `blob_hash`, which is
+    /// preserved across `with_name`. If a future refactor drops
+    /// `blob_hash` from the rename builder, this test catches it.
+    #[test]
+    fn test_etag_stable_across_rename() {
+        let file = File::with_timestamps_and_blob_hash(
+            "id-1".to_string(),
+            "file.txt".to_string(),
+            StoragePath::from_string("/file.txt"),
+            42,
+            "text/plain".to_string(),
+            None,
+            1_000,
+            2_000,
+            None,
+            "stable-hash".to_string(),
+        )
+        .unwrap();
+
+        let renamed = file.with_name("renamed.txt".to_string()).unwrap();
+        assert_eq!(renamed.etag(), "stable-hash");
+        assert_eq!(renamed.content_hash(), "stable-hash");
     }
 }

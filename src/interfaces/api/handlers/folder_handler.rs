@@ -692,8 +692,10 @@ pub async fn list_folder_resources(
                 .into_iter()
                 .map(|row| {
                     if row.resource_type == "folder" {
+                        let resource_id = row.id.to_string();
                         let dto = FolderDto {
-                            id: row.id.to_string(),
+                            etag: resource_id.clone(),
+                            id: resource_id,
                             name: row.name.clone(),
                             path: String::new(), // cleared — share recipients must not see hierarchy
                             parent_id: row.parent_id.map(|u| u.to_string()),
@@ -715,6 +717,14 @@ pub async fn list_folder_resources(
                             .as_deref()
                             .unwrap_or("application/octet-stream");
                         let size_bytes = row.size.max(0) as u64;
+                        // `FolderResourceRow` (the UNION ALL row used
+                        // by this listing) doesn't carry `blob_hash`,
+                        // so neither `content_hash` nor `etag` can be
+                        // populated here without widening the SQL. The
+                        // REST file-listing UI doesn't issue
+                        // conditional requests against these rows —
+                        // file download / WebDAV PROPFIND go through
+                        // paths that DO carry the hash.
                         let dto = FileDto {
                             id: row.id.to_string(),
                             name: row.name.clone(),
@@ -730,6 +740,7 @@ pub async fn list_folder_resources(
                             size_formatted: format_file_size(size_bytes),
                             owner_id: Some(row.owner_id.to_string()),
                             sort_date: None,
+                            content_hash: String::new(),
                             etag: String::new(),
                         };
                         FolderResourceItemDto {

@@ -178,6 +178,29 @@ impl Folder {
         self.owner_id
     }
 
+    /// Opaque ETag string (raw, NOT HTTP-quoted). Handlers wrap in
+    /// `"…"` themselves at the HTTP boundary.
+    ///
+    /// **Current formula**: the folder's UUID — stable for the life of
+    /// the row, does NOT change when descendants are added/modified/
+    /// deleted. This matches today's behaviour in every existing
+    /// folder ETag emission site and is the de-facto v1 contract.
+    ///
+    /// **Known limitation**: NextCloud's sync engine relies on a
+    /// collection's ETag changing whenever any descendant changes —
+    /// that's the signal it uses to decide "recurse into this folder
+    /// to find what's new". A constant ETag breaks NC's incremental
+    /// sync (forces periodic deep recrawl).
+    ///
+    /// A follow-up PR will introduce `storage.folders.tree_modified_at`
+    /// (bumped by trigger on any descendant write) and switch this
+    /// method to `format!("{}-{}", id_short, tree_modified_at)`. That
+    /// PR will be ETag-breaking — all clients re-walk once — so it's
+    /// kept separate from this refactor.
+    pub fn etag(&self) -> &str {
+        &self.id
+    }
+
     /// Creates a new Folder instance from a DTO
     /// This function is primarily for conversions in batch handlers
     pub fn from_dto(

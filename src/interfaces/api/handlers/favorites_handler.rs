@@ -253,8 +253,10 @@ pub async fn list_favorites_resources(
                     };
 
                     if row.resource_type == "folder" {
+                        let resource_id = row.resource_id.to_string();
                         let dto = FolderDto {
-                            id: row.resource_id.to_string(),
+                            etag: resource_id.clone(),
+                            id: resource_id,
                             name: row.name.clone(),
                             path,
                             parent_id: row.parent_id.map(|u| u.to_string()),
@@ -277,6 +279,12 @@ pub async fn list_favorites_resources(
                             .as_deref()
                             .unwrap_or("application/octet-stream");
                         let size_bytes = row.size.max(0) as u64;
+                        // The favorites list query doesn't select
+                        // `blob_hash` — favorites UI displays metadata
+                        // only and doesn't trigger ETag-conditional
+                        // requests against these rows. If a caller
+                        // ever needs the content hash here, widen the
+                        // favorites SQL.
                         let dto = FileDto {
                             id: row.resource_id.to_string(),
                             name: row.name.clone(),
@@ -294,6 +302,7 @@ pub async fn list_favorites_resources(
                             size_formatted: format_file_size(size_bytes),
                             owner_id: Some(row.owner_id.to_string()),
                             sort_date: None,
+                            content_hash: String::new(),
                             etag: String::new(),
                         };
                         FavoritesResourceItemDto {

@@ -353,6 +353,7 @@ async fn handle_propfind(
         // Root folder
         let root_folder = FolderDto {
             id: "root".to_string(),
+            etag: "root".to_string(),
             name: "".to_string(),
             path: "".to_string(),
             parent_id: None,
@@ -706,7 +707,7 @@ async fn handle_get(
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, &*file.mime_type)
         .header(header::CONTENT_LENGTH, file.size)
-        .header(header::ETAG, format!("\"{}\"", file.id))
+        .header(header::ETAG, format!("\"{}\"", file.etag))
         .header(
             header::LAST_MODIFIED,
             chrono::DateTime::<Utc>::from_timestamp(file.created_at as i64, 0)
@@ -747,7 +748,7 @@ async fn handle_head(
                     .status(StatusCode::OK)
                     .header(header::CONTENT_TYPE, "httpd/unix-directory")
                     .header(header::CONTENT_LENGTH, 0)
-                    .header(header::ETAG, format!("\"{}\"", folder.id))
+                    .header(header::ETAG, format!("\"{}\"", folder.etag))
                     .body(Body::empty())
                     .unwrap());
             }
@@ -756,7 +757,7 @@ async fn handle_head(
                     .status(StatusCode::OK)
                     .header(header::CONTENT_TYPE, &*file.mime_type)
                     .header(header::CONTENT_LENGTH, file.size)
-                    .header(header::ETAG, format!("\"{}\"", file.id))
+                    .header(header::ETAG, format!("\"{}\"", file.etag))
                     .header(
                         header::LAST_MODIFIED,
                         chrono::DateTime::<Utc>::from_timestamp(file.created_at as i64, 0)
@@ -777,7 +778,7 @@ async fn handle_head(
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, "httpd/unix-directory")
             .header(header::CONTENT_LENGTH, 0)
-            .header(header::ETAG, format!("\"{}\"", folder.id))
+            .header(header::ETAG, format!("\"{}\"", folder.etag))
             .body(Body::empty())
             .unwrap());
     }
@@ -793,7 +794,7 @@ async fn handle_head(
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, &*file.mime_type)
         .header(header::CONTENT_LENGTH, file.size)
-        .header(header::ETAG, format!("\"{}\"", file.id))
+        .header(header::ETAG, format!("\"{}\"", file.etag))
         .header(
             header::LAST_MODIFIED,
             chrono::DateTime::<Utc>::from_timestamp(file.created_at as i64, 0)

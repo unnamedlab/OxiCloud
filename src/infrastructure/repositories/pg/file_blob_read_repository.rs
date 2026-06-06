@@ -131,11 +131,11 @@ impl FileBlobReadRepository {
         mime_type: String,
         created_at: i64,
         modified_at: i64,
-        etag: String,
+        blob_hash: String,
         owner_id: Option<Uuid>,
     ) -> Result<File, DomainError> {
         let storage_path = Self::make_file_path(folder_path.as_deref(), &name);
-        File::with_timestamps_and_etag(
+        File::with_timestamps_and_blob_hash(
             id,
             name,
             storage_path,
@@ -145,7 +145,7 @@ impl FileBlobReadRepository {
             created_at as u64,
             modified_at as u64,
             owner_id,
-            etag,
+            blob_hash,
         )
         .map_err(|e| DomainError::internal_error("FileBlobRead", format!("entity: {e}")))
     }
@@ -226,9 +226,9 @@ impl FileBlobReadRepository {
         let mut files = Vec::with_capacity(rows.len());
         let mut sort_dates = Vec::with_capacity(rows.len());
 
-        for (id, name, fid, fpath, size, mime, ca, ma, etag, uid, sd) in rows {
+        for (id, name, fid, fpath, size, mime, ca, ma, blob_hash, uid, sd) in rows {
             files.push(Self::row_to_file(
-                id, name, fid, fpath, size, mime, ca, ma, etag, uid,
+                id, name, fid, fpath, size, mime, ca, ma, blob_hash, uid,
             )?);
             sort_dates.push(sd);
         }
@@ -410,9 +410,11 @@ impl FileReadPort for FileBlobReadRepository {
         .map_err(|e| DomainError::internal_error("FileBlobRead", format!("list: {e}")))?;
 
         rows.into_iter()
-            .map(|(id, name, fid, fpath, size, mime, ca, ma, etag, uid)| {
-                Self::row_to_file(id, name, fid, fpath, size, mime, ca, ma, etag, uid)
-            })
+            .map(
+                |(id, name, fid, fpath, size, mime, ca, ma, blob_hash, uid)| {
+                    Self::row_to_file(id, name, fid, fpath, size, mime, ca, ma, blob_hash, uid)
+                },
+            )
             .collect()
     }
 
@@ -466,9 +468,11 @@ impl FileReadPort for FileBlobReadRepository {
         .map_err(|e| DomainError::internal_error("FileBlobRead", format!("list_for_owner: {e}")))?;
 
         rows.into_iter()
-            .map(|(id, name, fid, fpath, size, mime, ca, ma, etag, uid)| {
-                Self::row_to_file(id, name, fid, fpath, size, mime, ca, ma, etag, uid)
-            })
+            .map(
+                |(id, name, fid, fpath, size, mime, ca, ma, blob_hash, uid)| {
+                    Self::row_to_file(id, name, fid, fpath, size, mime, ca, ma, blob_hash, uid)
+                },
+            )
             .collect()
     }
 
@@ -532,9 +536,11 @@ impl FileReadPort for FileBlobReadRepository {
         .map_err(|e| DomainError::internal_error("FileBlobRead", format!("list_batch: {e}")))?;
 
         rows.into_iter()
-            .map(|(id, name, fid, fpath, size, mime, ca, ma, etag, uid)| {
-                Self::row_to_file(id, name, fid, fpath, size, mime, ca, ma, etag, uid)
-            })
+            .map(
+                |(id, name, fid, fpath, size, mime, ca, ma, blob_hash, uid)| {
+                    Self::row_to_file(id, name, fid, fpath, size, mime, ca, ma, blob_hash, uid)
+                },
+            )
             .collect()
     }
 
@@ -598,9 +604,11 @@ impl FileReadPort for FileBlobReadRepository {
         })?;
 
         rows.into_iter()
-            .map(|(id, name, fid, fpath, size, mime, ca, ma, etag, uid)| {
-                Self::row_to_file(id, name, fid, fpath, size, mime, ca, ma, etag, uid)
-            })
+            .map(
+                |(id, name, fid, fpath, size, mime, ca, ma, blob_hash, uid)| {
+                    Self::row_to_file(id, name, fid, fpath, size, mime, ca, ma, blob_hash, uid)
+                },
+            )
             .collect()
     }
 
@@ -815,9 +823,9 @@ impl FileReadPort for FileBlobReadRepository {
             while let Some(row) = row_stream.try_next().await.map_err(|e| {
                 DomainError::internal_error("FileBlobRead", format!("subtree stream: {e}"))
             })? {
-                let (id, name, fid, fpath, size, mime, ca, ma, etag, uid) = row;
+                let (id, name, fid, fpath, size, mime, ca, ma, blob_hash, uid) = row;
                 let file = FileBlobReadRepository::row_to_file(
-                    id, name, fid, fpath, size, mime, ca, ma, etag, uid,
+                    id, name, fid, fpath, size, mime, ca, ma, blob_hash, uid,
                 )?;
                 yield file;
             }
@@ -930,8 +938,8 @@ impl FileReadPort for FileBlobReadRepository {
         let files = rows
             .into_iter()
             .map(
-                |(id, name, fid, fpath, size, mime, ca, ma, etag, uid, _total)| {
-                    Self::row_to_file(id, name, fid, fpath, size, mime, ca, ma, etag, uid)
+                |(id, name, fid, fpath, size, mime, ca, ma, blob_hash, uid, _total)| {
+                    Self::row_to_file(id, name, fid, fpath, size, mime, ca, ma, blob_hash, uid)
                 },
             )
             .collect::<Result<Vec<_>, _>>()
@@ -1116,8 +1124,8 @@ impl FileReadPort for FileBlobReadRepository {
         let files = rows
             .into_iter()
             .map(
-                |(id, name, fid, fpath, size, mime, ca, ma, etag, uid, _total)| {
-                    Self::row_to_file(id, name, fid, fpath, size, mime, ca, ma, etag, uid)
+                |(id, name, fid, fpath, size, mime, ca, ma, blob_hash, uid, _total)| {
+                    Self::row_to_file(id, name, fid, fpath, size, mime, ca, ma, blob_hash, uid)
                 },
             )
             .collect::<Result<Vec<_>, _>>()
@@ -1212,9 +1220,11 @@ impl FileReadPort for FileBlobReadRepository {
         .map_err(|e| DomainError::internal_error("FileBlobRead", format!("suggest: {e}")))?;
 
         rows.into_iter()
-            .map(|(id, name, fid, fpath, size, mime, ca, ma, etag, uid)| {
-                Self::row_to_file(id, name, fid, fpath, size, mime, ca, ma, etag, uid)
-            })
+            .map(
+                |(id, name, fid, fpath, size, mime, ca, ma, blob_hash, uid)| {
+                    Self::row_to_file(id, name, fid, fpath, size, mime, ca, ma, blob_hash, uid)
+                },
+            )
             .collect()
     }
 }

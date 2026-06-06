@@ -101,10 +101,10 @@ impl FileBlobWriteRepository {
         created_at: i64,
         modified_at: i64,
         owner_id: Option<Uuid>,
-        etag: String,
+        blob_hash: String,
     ) -> Result<File, DomainError> {
         let storage_path = Self::make_file_path(folder_path.as_deref(), &name);
-        File::with_timestamps_and_etag(
+        File::with_timestamps_and_blob_hash(
             id,
             name,
             storage_path,
@@ -114,7 +114,7 @@ impl FileBlobWriteRepository {
             created_at as u64,
             modified_at as u64,
             owner_id,
-            etag,
+            blob_hash,
         )
         .map_err(|e| DomainError::internal_error("FileBlobWrite", format!("entity: {e}")))
     }

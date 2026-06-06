@@ -62,14 +62,32 @@ pub struct FileDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sort_date: Option<u64>,
 
-    /// Content-addressable ETag (= blob_hash). Changes on every content write.
-    /// Used for WebDAV/Nextcloud ETag headers. Omitted from REST API JSON.
-    #[serde(skip)]
+    /// Raw BLAKE3 content hash. Populated from `File::content_hash()`.
+    /// Exposed in REST JSON so API consumers can use it for
+    /// content-addressable URLs, dedup verification, and integrity
+    /// audits. Distinct from `etag` (which is an HTTP-only cache
+    /// token whose formula may grow to include `modified_at` etc.).
+    pub content_hash: String,
+
+    /// Opaque HTTP ETag. Populated from `File::etag()`. Used by
+    /// WebDAV/NextCloud handlers when emitting `ETag` headers and
+    /// also exposed in REST JSON so frontends can pass it back
+    /// through `If-Match` / `If-None-Match` on download / mutation
+    /// endpoints without a separate HEAD round-trip.
     pub etag: String,
 }
 
 impl From<File> for FileDto {
     fn from(file: File) -> Self {
+        // Compute the HTTP ETag BEFORE consuming the entity — once
+        // `File::etag()` folds modified_at (and possibly more) into
+        // the formula, this becomes more than a string clone and
+        // must run against a live entity, not against
+        // already-extracted parts. content_hash is just the blob
+        // hash; etag is the cache token derived from it.
+        let etag = file.etag().to_string();
+        let content_hash = file.content_hash().to_string();
+
         // Consume the entity by moving all fields — zero heap allocations
         // for id, name, path, folder_id, owner_id (previously 5× .to_string()).
         let parts = file.into_parts();
@@ -95,7 +113,8 @@ impl From<File> for FileDto {
             size_formatted,
             owner_id: parts.owner_id.map(|u| u.to_string()),
             sort_date: None,
-            etag: parts.etag,
+            content_hash,
+            etag,
         }
     }
 }
@@ -150,6 +169,7 @@ impl FileDto {
             category: Arc::from("Document"),
             size_formatted: "0 Bytes".to_string(),
             owner_id: None,
+            content_hash: String::new(),
             etag: String::new(),
             sort_date: None,
         }

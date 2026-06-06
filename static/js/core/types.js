@@ -25,6 +25,7 @@
  * @property {string} owner_id
  * @property {string|null} parent_id the folder parent (null if is_root)
  * @property {string} path the full path
+ * @property {string} etag opaque HTTP ETag, for If-Match / If-None-Match
  */
 
 //FIXME: rename into FileItem
@@ -44,6 +45,8 @@
  * @property {number} size
  * @property {string} size_formatted
  * @property {number} sort_date
+ * @property {string} etag opaque HTTP ETag, for If-Match / If-None-Match
+ * @property {string} content_hash raw BLAKE3 content hash, for dedup checks
  */
 
 /**

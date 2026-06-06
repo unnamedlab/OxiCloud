@@ -377,7 +377,8 @@ const favoritesView = {
                         sort_date: toSecs(item.favorited_at),
                         icon_class: f.icon_class,
                         icon_special_class: f.icon_special_class ?? '',
-                        category: 'Folder'
+                        category: 'Folder',
+                        etag: ''
                     })
                 );
             } else if (item.resource_type === 'file') {
@@ -397,7 +398,9 @@ const favoritesView = {
                         sort_date: toSecs(item.favorited_at),
                         icon_class: f.icon_class,
                         icon_special_class: f.icon_special_class ?? '',
-                        category: f.category
+                        category: f.category,
+                        etag: '',
+                        content_hash: ''
                     })
                 );
             }

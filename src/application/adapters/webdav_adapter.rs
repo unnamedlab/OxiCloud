@@ -444,9 +444,11 @@ impl WebDavAdapter {
         xml_writer.write_event(Event::Text(BytesText::new(&modified_at.to_rfc2822())))?;
         xml_writer.write_event(Event::End(BytesEnd::new("D:getlastmodified")))?;
 
-        // Other standard properties
+        // ETag — routes through `FolderDto::etag` (= `Folder::etag()`)
+        // so every WebDAV emitter and HEAD response agree on a single
+        // value for the same folder.
         xml_writer.write_event(Event::Start(BytesStart::new("D:getetag")))?;
-        xml_writer.write_event(Event::Text(BytesText::new(&format!("\"{}\"", folder.id))))?;
+        xml_writer.write_event(Event::Text(BytesText::new(&format!("\"{}\"", folder.etag))))?;
         xml_writer.write_event(Event::End(BytesEnd::new("D:getetag")))?;
 
         // Content length (0 for directories)
@@ -505,9 +507,11 @@ impl WebDavAdapter {
         xml_writer.write_event(Event::Text(BytesText::new(&modified_at.to_rfc2822())))?;
         xml_writer.write_event(Event::End(BytesEnd::new("D:getlastmodified")))?;
 
-        // ETag
+        // ETag — routes through `FileDto::etag` (= `File::etag()`) so
+        // PROPFIND, GET, HEAD, PUT-response, and MOVE all emit
+        // byte-identical values for the same file.
         xml_writer.write_event(Event::Start(BytesStart::new("D:getetag")))?;
-        xml_writer.write_event(Event::Text(BytesText::new(&format!("\"{}\"", file.id))))?;
+        xml_writer.write_event(Event::Text(BytesText::new(&format!("\"{}\"", file.etag))))?;
         xml_writer.write_event(Event::End(BytesEnd::new("D:getetag")))?;
 
         Ok(())
@@ -589,7 +593,7 @@ impl WebDavAdapter {
                         xml_writer.write_event(Event::Start(BytesStart::new("D:getetag")))?;
                         xml_writer.write_event(Event::Text(BytesText::new(&format!(
                             "\"{}\"",
-                            folder.id
+                            folder.etag
                         ))))?;
                         xml_writer.write_event(Event::End(BytesEnd::new("D:getetag")))?;
                     }
@@ -685,7 +689,7 @@ impl WebDavAdapter {
                         xml_writer.write_event(Event::Start(BytesStart::new("D:getetag")))?;
                         xml_writer.write_event(Event::Text(BytesText::new(&format!(
                             "\"{}\"",
-                            file.id
+                            file.etag
                         ))))?;
                         xml_writer.write_event(Event::End(BytesEnd::new("D:getetag")))?;
                     }

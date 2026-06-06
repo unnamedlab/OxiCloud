@@ -250,6 +250,9 @@ async fn handle_search(
 
 /// Build a `FileDto` from a search file result.
 fn file_dto_from_search(fr: &crate::application::dtos::search_dto::SearchFileResultDto) -> FileDto {
+    // `SearchFileResultDto` doesn't carry `blob_hash`; the SEARCH /
+    // REPORT XML emitter doesn't read `content_hash` or `etag` off
+    // these DTOs anyway, so leaving them empty here is correct.
     FileDto {
         id: fr.id.clone(),
         name: fr.name.clone(),
@@ -267,6 +270,7 @@ fn file_dto_from_search(fr: &crate::application::dtos::search_dto::SearchFileRes
         size_formatted: format_file_size(fr.size),
         owner_id: None,
         sort_date: None,
+        content_hash: String::new(),
         etag: String::new(),
     }
 }
@@ -276,6 +280,7 @@ fn folder_dto_from_search(
     sr: &crate::application::dtos::search_dto::SearchFolderResultDto,
 ) -> FolderDto {
     FolderDto {
+        etag: sr.id.clone(),
         id: sr.id.clone(),
         name: sr.name.clone(),
         path: sr.path.clone(),

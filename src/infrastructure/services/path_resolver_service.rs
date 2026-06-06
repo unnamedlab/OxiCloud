@@ -145,6 +145,7 @@ impl PathResolverService {
 
         match resource_type.as_str() {
             "folder" => Ok(ResolvedResource::Folder(FolderDto {
+                etag: id.clone(),
                 id,
                 name: name.clone(),
                 path: res_path,
@@ -160,6 +161,11 @@ impl PathResolverService {
             _ => {
                 let mime = mime_type.unwrap_or_else(|| "application/octet-stream".to_string());
                 let sz = size.unwrap_or(0) as u64;
+                // `content_hash`/`etag` are empty here: this resolver
+                // path doesn't select `blob_hash` from SQL — callers
+                // are doing existence/type discrimination, not ETag
+                // emission. If a caller ever needs an ETag from this
+                // codepath, widen the SELECT and populate properly.
                 Ok(ResolvedResource::File(FileDto {
                     id,
                     name: name.clone(),
@@ -175,6 +181,7 @@ impl PathResolverService {
                     size_formatted: format_file_size(sz),
                     owner_id: uid,
                     sort_date: None,
+                    content_hash: String::new(),
                     etag: String::new(),
                 }))
             }

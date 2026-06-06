@@ -809,8 +809,10 @@ fn build_trash_cursor(row: &TrashResourceRow, order_by: &str, reverse: bool) -> 
 fn row_to_item_dto(row: TrashResourceRow) -> TrashResourceItemDto {
     let path = row.path.clone().unwrap_or_default();
     if row.resource_type == "folder" {
+        let resource_id = row.resource_id.to_string();
         let dto = FolderDto {
-            id: row.resource_id.to_string(),
+            etag: resource_id.clone(),
+            id: resource_id,
             name: row.name.clone(),
             path,
             parent_id: row.parent_id.map(|u| u.to_string()),
@@ -834,6 +836,8 @@ fn row_to_item_dto(row: TrashResourceRow) -> TrashResourceItemDto {
             .as_deref()
             .unwrap_or("application/octet-stream");
         let size_bytes = row.size.max(0) as u64;
+        // Trash listing row doesn't carry blob_hash either; trashed
+        // items aren't ETag-conditional in the UI.
         let dto = FileDto {
             id: row.resource_id.to_string(),
             name: row.name.clone(),
@@ -849,6 +853,7 @@ fn row_to_item_dto(row: TrashResourceRow) -> TrashResourceItemDto {
             size_formatted: format_file_size(size_bytes),
             owner_id: Some(row.owner_id.to_string()),
             sort_date: None,
+            content_hash: String::new(),
             etag: String::new(),
         };
         TrashResourceItemDto {

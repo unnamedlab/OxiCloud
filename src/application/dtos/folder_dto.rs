@@ -73,11 +73,19 @@ pub struct FolderDto {
     /// Human-readable category (always "Folder")
     #[schema(value_type = String)]
     pub category: Arc<str>,
+
+    /// Opaque ETag for HTTP responses. Populated from `Folder::etag()`
+    /// at conversion time so every WebDAV / NextCloud handler emits
+    /// the same value, and exposed in REST JSON so the frontend can
+    /// pass it back through `If-Match` on rename / move endpoints
+    /// without a separate HEAD round-trip.
+    pub etag: String,
 }
 
 impl From<Folder> for FolderDto {
     fn from(folder: Folder) -> Self {
         let is_root = folder.parent_id().is_none();
+        let etag = folder.etag().to_string();
 
         Self {
             id: folder.id().to_string(),
@@ -91,6 +99,7 @@ impl From<Folder> for FolderDto {
             icon_class: Arc::from("fas fa-folder"),
             icon_special_class: Arc::from("folder-icon"),
             category: Arc::from("Folder"),
+            etag,
         }
     }
 }
@@ -141,6 +150,7 @@ impl FolderDto {
             icon_class: Arc::from("fas fa-folder"),
             icon_special_class: Arc::from("folder-icon"),
             category: Arc::from("Folder"),
+            etag: String::new(),
         }
     }
 }
